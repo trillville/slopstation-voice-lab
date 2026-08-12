@@ -54,9 +54,19 @@ def resolve(cfg, provider=None, model=None):
     return provider, (model or assistant.default_model(cfg, provider))
 
 
-def run_one(cfg, secrets, provider, model, utterance):
-    """One trial. Returns (calls, reply, jobs) where calls is
-    [(tool_name, args), ...] in the order the model made them."""
+def run_convo(cfg, secrets, provider, model, utterances):
+    """One trial of N turns on ONE backend, so later turns see the earlier
+    ones. Returns (calls, replies, jobs); calls is [(tool_name, args), ...]
+    in the order the model made them, across all turns.
+
+    NOTE for anything probing what the model remembers: the REPL backends and
+    the voice pipeline keep conversation state DIFFERENTLY. OpenAIBackend
+    threads it server-side via previous_response_id, so a second turn can see
+    the first turn's server-executed searches for free. The voice lane
+    rebuilds an LLMContext client-side, where those items are dropped - which
+    is the whole reason llm_audit.py exists. So a memory probe here is not a
+    faithful proxy for production; it tests the PROMPT rule, not the plumbing.
+    """
     log = cglib.CapturingLog("probe")
     jobs = FakeJobs()
     impls = assistant.tool_impls(
@@ -72,5 +82,14 @@ def run_one(cfg, secrets, provider, model, utterance):
     backend = assistant.BACKENDS[provider](
         secrets, model, effort=cfg["voice"]["assistantReasoningEffort"],
         voice=cfg["voice"])
-    reply = backend.turn(assistant.system_instruction(cfg), utterance, impls)
-    return calls, (reply or "").strip(), jobs
+    system = assistant.system_instruction(cfg)
+    replies = [(backend.turn(system, u, impls) or "").strip()
+               for u in utterances]
+    return calls, replies, jobs
+
+
+def run_one(cfg, secrets, provider, model, utterance):
+    """One single-turn trial. Returns (calls, reply, jobs)."""
+    calls, replies, jobs = run_convo(cfg, secrets, provider, model,
+                                     [utterance])
+    return calls, replies[0], jobs
