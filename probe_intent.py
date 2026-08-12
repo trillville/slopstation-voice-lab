@@ -32,18 +32,9 @@ WHY THESE PROBES (2026-08-11, all three observed live):
 Exit code is the number of failing probes, so this can gate a prompt change.
 """
 import argparse
-import json
 import sys
-from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]                      # .../slopstation
-sys.path.insert(0, str(HERE.parent))        # k15/voice
-sys.path.insert(0, str(ROOT / "k15"))
-
-import cglib          # noqa: E402
-import assistant      # noqa: E402
-import dispatch as dp  # noqa: E402
+import harness
 
 # (utterance, must_act, why). must_act=False means ANSWERING is correct and
 # touching a tool is the bug; True means the request is real and refusing to
@@ -62,39 +53,17 @@ PROBES = [
 DISRUPTIVE = ("end_session", "start_session", "switch_input")
 
 
-def run_one(cfg, secrets, provider, model, utterance):
-    """One trial. Returns (actions taken, spoken reply)."""
-    log = cglib.CapturingLog("probe")
-    impls = assistant.tool_impls(dp.Dispatch(cfg, log, dry_run=True), log)
-    acted = []
-    for name in ("control", "launch_game"):
-        inner = impls[name]
-
-        def wrap(args, _n=name, _i=inner):
-            acted.append(str(args.get("action", _n)))
-            return _i(args)
-        impls[name] = wrap
-    backend = assistant.BACKENDS[provider](
-        secrets, model, effort=cfg["voice"]["assistantReasoningEffort"],
-        voice=cfg["voice"])
-    reply = backend.turn(assistant.system_instruction(cfg), utterance, impls)
-    return acted, (reply or "").strip()
-
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", choices=list(assistant.BACKENDS))
+    ap.add_argument("--provider", choices=list(harness.assistant.BACKENDS))
     ap.add_argument("--model")
     ap.add_argument("--trials", type=int, default=8,
                     help="the incident reproduced at 1/3, so 3 is too few to "
                          "call a fix proven; 8 is the floor")
     a = ap.parse_args()
 
-    cfg = json.loads((ROOT / "k15" / "config.json").read_text(encoding="utf-8"))
-    secrets = json.loads(
-        (ROOT / "k15" / "secrets.json").read_text(encoding="utf-8"))
-    provider = a.provider or cfg["voice"]["assistantProvider"]
-    model = a.model or assistant.default_model(cfg, provider)
+    cfg, secrets = harness.load()
+    provider, model = harness.resolve(cfg, a.provider, a.model)
 
     print(f"probe_intent: {provider}/{model}, {a.trials} trials, dry_run=True")
     print("a question about an action must not take it\n")
@@ -103,7 +72,10 @@ def main():
         acted_n, samples = 0, []
         for _ in range(a.trials):
             try:
-                acted, reply = run_one(cfg, secrets, provider, model, utterance)
+                calls, reply, _ = harness.run_one(
+                    cfg, secrets, provider, model, utterance)
+                acted = [str(args.get("action", name))
+                         for name, args in calls]
             except Exception as e:                  # an API blip is not a verdict
                 acted, reply = ["ERROR"], repr(e)[:80]
             if any(x in DISRUPTIVE for x in acted):
