@@ -2,29 +2,18 @@
 
     .venv\\Scripts\\python bench\\probe_grounding.py --provider openai
 
-Live model, real money, non-deterministic - see harness.py. Two rules that
-were added to RULES after live failures and had no coverage until now.
+Live model, real money, non-deterministic - see harness.py. Two RULES added
+after live failures, with no coverage until now.
 
-OWNED. "Recommend something I don't own" must not return a game from the
-library. The library IS what the user owns, so a catalog title in that answer
-is a plain contradiction. Seen live on 2026-08-11: asked for couch co-op
-picks the user did not own, the assistant offered Baldur's Gate 3, which is
-in the library.
+OWNED. "Recommend something I don't own" must not return a library title; the
+library IS what the user owns, so such an answer contradicts itself.
 
 PROVENANCE. Asked where an answer came from, the model must not disown a good
-one. Also seen live, and the more expensive failure of the two: after giving
-five real, correctly-searched recommendations it announced they "came from an
-unsupported guess, not from a real catalog lookup". That was false. It cost
-an hour of investigation and two wrong conclusions written into this repo,
-because a model's account of its own process was taken as evidence.
+one - live, it called five correctly-searched picks an "unsupported guess".
 
-  CAVEAT on the provenance probe, stated because it limits what a PASS
-  means: the REPL threads conversation state server-side through
-  previous_response_id, so turn two can see turn one's searches for free. The
-  voice lane rebuilds the context client-side, where those items are dropped
-  - the gap llm_audit.py fills. Both paths now give the model the
-  information, by different mechanisms. This probe therefore tests the PROMPT
-  rule, not the plumbing that feeds it.
+  CAVEAT, and it bounds what a PASS means: the REPL threads state server-side
+  via previous_response_id while the voice lane rebuilds context client-side
+  and drops those items, so this tests the PROMPT rule, not the plumbing.
 """
 import argparse
 import re
@@ -32,9 +21,8 @@ import sys
 
 import harness
 
-# Phrases that disown an answer. The failure is not hedging - "I'm not
-# certain whether I looked that up" is the rule working. It is asserting a
-# fabrication that did not happen.
+# Phrases that disown an answer. Hedging ("not certain I looked that up") is
+# the rule working; the failure is asserting a fabrication that never happened.
 DISOWN = [
     r"unsupported guess", r"\bmade (?:it|them|that) up\b",
     r"(?:not|n't) (?:from )?(?:a )?(?:real|actual|verified) (?:lookup|search|catalog)",
@@ -49,10 +37,8 @@ ASK_FOR_PICKS = ("Recommend some good couch co-op games on Steam that I "
 
 
 def owned_titles(min_len=7):
-    """Library titles distinctive enough to match on. Short names ('Fellowship',
-    'Deadlock') appear inside ordinary sentences, so they are excluded rather
-    than allowed to manufacture failures - the same over-literal matching that
-    made probe_task_brief's first two versions wrong."""
+    """Library titles long enough to match on: short names ('Fellowship',
+    'Deadlock') occur in ordinary sentences and would manufacture failures."""
     import library
     idx = library.load()
     names = [r["name"] for r in idx.get("installed", []) if r.get("name")]

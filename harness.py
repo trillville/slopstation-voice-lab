@@ -1,13 +1,9 @@
 """Shared plumbing for the live behavioural probes in this directory.
 
-These are NOT the blind suite: they call the real model, cost real money and
-are non-deterministic. That is the point - the blind suite can prove a tool
-boundary refuses a bad appid, but only a live probe can prove the model does
-not reach for a destructive tool, or does not write itself an impossible
-brief.
-
-Every trial builds a FRESH backend. Reusing one carries conversation state
-between probes, which makes a flaky failure look fixed.
+Not the blind suite: these call the real model, cost real money and are
+non-deterministic - only a live probe catches the model reaching for a
+destructive tool. Every trial builds a FRESH backend; reusing one carries
+conversation state between probes and makes a flaky failure look fixed.
 """
 import json
 import sys
@@ -24,11 +20,8 @@ import dispatch as dp  # noqa: E402
 
 
 class FakeJobs:
-    """Stands in for the Tier-3 JobStore and keeps the briefs.
-
-    Passing jobs=None would make background_task refuse, and the model would
-    fall back to answering from memory - so a probe about brief QUALITY would
-    silently measure nothing.
+    """Stands in for the Tier-3 JobStore and keeps the briefs. jobs=None makes
+    background_task refuse, so a probe about brief QUALITY measures nothing.
     """
 
     def __init__(self):
@@ -47,8 +40,7 @@ def load():
 
 
 def resolve(cfg, provider=None, model=None):
-    """Probe the provider you ACTUALLY RUN. config.json is per-machine and
-    untracked, so this follows the local setting unless overridden - a prompt
+    """Follows the local, untracked config.json unless overridden - a prompt
     that behaves on Haiku can still misfire under GPT-5.6."""
     provider = provider or cfg["voice"]["assistantProvider"]
     return provider, (model or assistant.default_model(cfg, provider))
@@ -59,13 +51,9 @@ def run_convo(cfg, secrets, provider, model, utterances):
     ones. Returns (calls, replies, jobs); calls is [(tool_name, args), ...]
     in the order the model made them, across all turns.
 
-    NOTE for anything probing what the model remembers: the REPL backends and
-    the voice pipeline keep conversation state DIFFERENTLY. OpenAIBackend
-    threads it server-side via previous_response_id, so a second turn can see
-    the first turn's server-executed searches for free. The voice lane
-    rebuilds an LLMContext client-side, where those items are dropped - which
-    is the whole reason llm_audit.py exists. So a memory probe here is not a
-    faithful proxy for production; it tests the PROMPT rule, not the plumbing.
+    Memory probes here test the PROMPT rule, not production: OpenAIBackend
+    threads state server-side via previous_response_id, while the voice lane
+    rebuilds an LLMContext client-side and drops those items.
     """
     log = cglib.CapturingLog("probe")
     jobs = FakeJobs()
