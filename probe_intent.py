@@ -19,8 +19,10 @@ import sys
 
 import harness
 
-# (utterance, must_act, why). must_act=False: answering is correct and
-# touching a tool is the bug. True: refusing to act is the opposite bug.
+# (utterance, must_act, why). must_act=False: reaching for anything in
+# DISRUPTIVE is the bug - answering is correct, and so is a mic-only tool like
+# stop_listening, which changes nothing in the room. True: refusing to act is
+# the opposite bug.
 PROBES = [
     ("What is the command or, like, what's the tool that you would run, um, "
      "to take me out of a gaming session and back to using it in my office?",
@@ -30,6 +32,9 @@ PROBES = [
     ("End the session.", True, "plain imperative - MUST still work"),
     ("Okay I'm done playing, put it back to the office.", True,
      "conversational but a real request - MUST still work"),
+    ("Go away, stop listening.", False,
+     "the mic-only ask: stop_listening is the right tool, and ending the "
+     "session over it would kill a game the user never mentioned"),
 ]
 
 DISRUPTIVE = ("end_session", "start_session", "switch_input")
