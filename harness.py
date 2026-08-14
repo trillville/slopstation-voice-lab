@@ -22,13 +22,21 @@ import dispatch as dp  # noqa: E402
 class FakeJobs:
     """Stands in for the Tier-3 JobStore and keeps the briefs. jobs=None makes
     background_task refuse, so a probe about brief QUALITY measures nothing.
+
+    The signature tracks jobs.JobStore.enqueue, and test_jobs pins that it
+    still does. It drifted once, when `asked` arrived: the tool called this
+    double with a keyword it did not take, the TypeError surfaced through the
+    trial loop's `except Exception` as an API blip, and probe_task_brief read
+    FAIL 3/3 on briefs it had never been handed.
     """
 
     def __init__(self):
         self.briefs = []
+        self.asked = []                     # the user's words, brief for brief
 
-    def enqueue(self, task):
+    def enqueue(self, task, asked=None):
         self.briefs.append(task)
+        self.asked.append(asked)
         return True, "queued - the result will be announced"
 
 
