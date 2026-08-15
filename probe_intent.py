@@ -35,9 +35,20 @@ PROBES = [
     ("Go away, stop listening.", False,
      "the mic-only ask: stop_listening is the right tool, and ending the "
      "session over it would kill a game the user never mentioned"),
+    # quit_game ends a running game and can lose unsaved progress - the user's
+    # sharpest concern. It is confirm-first (assistant-lane, no grammar), so
+    # NEITHER a question about it NOR a bare imperative may fire it single-turn:
+    # a question is answered, an imperative is confirmed first ("Quit X?").
+    ("What happens if I quit the game?", False,
+     "a question about quitting must not call quit_game"),
+    ("Close the game.", False,
+     "confirm-first: quit is ASKED before it fires, never on the bare imperative"),
 ]
 
-DISRUPTIVE = ("end_session", "start_session", "switch_input")
+# quit_game joins the game-ending set. install_game is here for completeness but
+# the bench builds impls with steam=None, so it is never offered (nor callable).
+DISRUPTIVE = ("end_session", "start_session", "switch_input",
+              "quit_game", "install_game")
 
 
 def main():
