@@ -292,6 +292,7 @@ def main():
         t.start()
     print("\nrunning - deaths print as they happen\n")
     try:
+        next_tick = PROGRESS_S
         while True:
             # Bounded by what is LEFT, not by PROGRESS_S: waiting the full
             # interval and only then re-checking overshoots every run shorter
@@ -299,9 +300,18 @@ def main():
             left = args.seconds - (time.monotonic() - t0)
             if left <= 0:
                 break
-            stop.wait(min(PROGRESS_S, left))
+            # POLL, never one long wait. On Windows a blocking Event.wait()
+            # defers SIGINT for its whole duration, so a 5-minute wait made
+            # Ctrl-C look broken - pressed, nothing, pressed again, still a
+            # live process minutes later. The operator's escape hatch has to
+            # answer in about a second or it is not an escape hatch. Costs one
+            # wakeup a second across a 2 h soak, which is free.
+            stop.wait(min(1.0, left))
             if stop.is_set():
                 break
+            if time.monotonic() - t0 < next_tick:
+                continue
+            next_tick += PROGRESS_S
             mins = (time.monotonic() - t0) / 60
             tally = " | ".join(f"{c.api} {len(c.deaths)}d/{len(c.zombies)}z"
                                for c in cands)
