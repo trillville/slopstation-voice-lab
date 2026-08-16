@@ -1,0 +1,76 @@
+# hey_alfred, second attempt. Paths are relative to pipeline.py's --root
+# (default C:\Users\tillm\wake), NOT to this file - the data is 16 GB and stays
+# out of the repo.
+#
+# What changed from the 2026-08-15 run and why, since the diff is the whole
+# point of this file:
+#   n_samples        10000 -> 25000    livekit's own prod.yaml; openWakeWord's
+#                                      comment says "20,000 minimum", and stock
+#                                      hey_jarvis used 200,000
+#   steps            50000 -> 100000   prod.yaml. Medium took 12 min at 50k, so
+#                                      this is ~25 min - cheap for the return
+#   n_background_    200 -> 2000       this is a standalone NEGATIVE class in
+#     samples                          the batch, not just augmentation noise;
+#                                      at 200 it was a rounding error beside
+#                                      10,000 adversarial TTS negatives
+#   max_negative_    1500 -> 3000      prod.yaml
+#     weight
+#   custom_negative_ (none) -> below   the bare wake word without its greeting
+#     phrases                          is the commonest false trigger there is
+#
+# NOT changed, deliberately: augmentation.rounds stays at 1. pipeline.py widens
+# the background SNR to -0..20 dB, and rounds compound - three rounds of a
+# widened mix lands near -18 dB and teaches the model to fire on noise.
+
+model_name: hey_alfred
+
+target_phrases:
+  - "hey alfred"              # hˈeɪ ˈælfɹɪd  - relaxed "AL-frid"
+  - "hey al fred"             # how Flux actually renders it (see strip_wake)
+
+# Hard negatives, TTS-generated like the positives. The first entry is the
+# single most valuable one: "alfred" alone, i.e. the wake word with its
+# greeting stripped off, which is what a TV says when a character is named.
+# The rest are the near-misses the phrase invites - it is sonorant-heavy with
+# no sibilant, so its neighbours are many.
+custom_negative_phrases:
+  - "alfred"
+  - "al fred"
+  - "hey al"
+  - "hey fred"
+  - "hey alfred's"
+  - "hey all"
+  - "hey alfie"
+  - "hey albert"
+  - "say alfred"
+  - "it's alfred"
+
+n_samples: 25000
+n_samples_val: 2000
+n_background_samples: 2000
+n_background_samples_val: 400
+
+data_dir: ./data
+output_dir: ./output
+
+augmentation:
+  rounds: 1
+  # Globbed **/*.wav, so every subfolder counts: noise/ is MUSAN (774, no
+  # intelligible speech by design), room/ is the sliced film recording, and
+  # game/ is what this attempt adds - games are spectrally a different animal
+  # from dialogue, all percussive transients and compressed VO over a music bed.
+  background_paths: ["data/backgrounds"]
+  rir_paths: ["data/rirs"]
+
+model:
+  model_type: conv_attention
+  model_size: medium
+
+steps: 100000
+max_negative_weight: 3000.0
+
+# The ceiling find_best_threshold optimises recall against. Only means anything
+# once make_validation.py has replaced the validation set with real room audio;
+# against livekit's stock synthetic set it produced three sizes that scored
+# identically and could not be ranked.
+target_fp_per_hour: 0.2
