@@ -7,9 +7,9 @@ Runs on the GAMING PC, and only AFTER `livekit-wakeword setup`: setup skips the
 data/backgrounds, so clips dropped in early cost you the noise set with no
 error to notice.
 
-WHY slice at all - the design note originally said not to. The augmenter picks
-a background with random.choice over FILES and only then crops it, so weight
-is per file, not per second. setup fetches 774 MUSAN wavs; one 40-minute
+WHY slice at all, when handing the augmenter one long recording is the obvious
+move. It picks a background with random.choice over FILES and only then crops
+it, so weight is per file, not per second. setup fetches 774 MUSAN wavs; one 40-minute
 recording is one candidate in 775 and would land in ~0.1% of the mixes. At 4 s
 a clip, 40 minutes becomes ~600 files and the room reaches ~45% of them, which
 is the entire reason for recording it. 4 s rather than 2 leaves the augmenter
