@@ -20,7 +20,7 @@ telemetry, and the name is printed here instead.
 
 Writes room.wav (16 kHz mono, ~77 MB for 40 min) to the current directory,
 gitignored. It is NOT usable as-is: slice it with bench/slice_room.py before
-it reaches the augmenter - docs/custom-wakeword-design.md § 3 has the why.
+it reaches the augmenter, and that file's own docstring is the why.
 """
 import json
 import sys
