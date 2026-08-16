@@ -71,6 +71,8 @@ def main():
                     help="default: <root>/data/heldout")
     ap.add_argument("--restore", action="store_true",
                     help="put livekit's stock validation set back")
+    ap.add_argument("--replace", action="store_true",
+                    help="use ONLY the held-out audio (default: append to stock)")
     args = ap.parse_args()
 
     root = args.root.resolve()
@@ -96,9 +98,9 @@ def main():
                  f"Put HELD-OUT room and game recordings there - audio the "
                  f"model has never trained on.")
 
-    window = int(cfg.clip_duration * RATE)
+    window = int(cfg.augmentation.clip_duration * RATE)
     print(f"heldout  {heldout}  ({len(wavs)} wav)")
-    print(f"window   {cfg.clip_duration}s = {window} samples, non-overlapping")
+    print(f"window   {cfg.augmentation.clip_duration}s = {window} samples, non-overlapping")
 
     mel = MelSpectrogramFrontend(onnx_path=get_mel_model_path())
     emb = SpeechEmbedding(onnx_path=get_embedding_model_path())
@@ -107,27 +109,61 @@ def main():
     for chunk in clips(wavs, window):
         rows.append(_pad_or_truncate(emb.extract_embeddings(mel(chunk))[0]))
         if len(rows) % 500 == 0:
-            print(f"  {len(rows)} clips ({len(rows) * cfg.clip_duration / 3600:.2f} h)",
+            print(f"  {len(rows)} clips ({len(rows) * cfg.augmentation.clip_duration / 3600:.2f} h)",
                   flush=True)
     if not rows:
         sys.exit("every wav was shorter than one window - nothing to write")
 
-    features = np.stack(rows, axis=0).astype(np.float32)
-    hours = features.shape[0] * cfg.clip_duration / 3600
+    room = np.stack(rows, axis=0).astype(np.float32)
+    room_h = room.shape[0] * cfg.augmentation.clip_duration / 3600
 
     # First run only: keep livekit's stock set before overwriting it.
     if target.exists() and not backup.exists():
         shutil.copy2(target, backup)
         print(f"stock set backed up -> {backup.name}")
 
+    # APPEND by default, and always rebase from the BACKUP rather than from
+    # whatever is at `target` - re-running otherwise stacks the room audio onto
+    # a file that already contains it, and the set silently grows every time.
+    #
+    # Appending rather than replacing is the right call whenever the room audio
+    # is small next to the stock set's 16.7 h. Replacing 16.7 h of general
+    # negatives with 15 minutes buys a purer living-room FPPH and throws away
+    # the axis that catches a model firing on ordinary speech - and a
+    # sub-hour set is too noisy to carry a threshold on its own anyway.
+    # --replace is there for the day there are hours of room audio.
+    stock = np.zeros((0, 16, 96), dtype=np.float32)
+    if backup.exists() and not args.replace:
+        stock = np.load(str(backup))
+        if stock.ndim == 2:                 # (N, 96) -> (N//16, 16, 96)
+            stock = stock[:(stock.shape[0] // 16) * 16].reshape(-1, 16, 96)
+    combined = np.concatenate([stock, room], axis=0) if stock.shape[0] else room
+    stock_h = stock.shape[0] * cfg.augmentation.clip_duration / 3600
+    total_h = combined.shape[0] * cfg.augmentation.clip_duration / 3600
+
     feat_dir.mkdir(parents=True, exist_ok=True)
-    np.save(str(target), features)
-    print(f"\nwrote {features.shape} -> {target}")
-    print(f"FPPH will now be measured over {hours:.2f} h of YOUR room.")
-    if hours < 1:
-        print("\nWARNING: under an hour. target_fp_per_hour is 0.2, so a single "
-              "\nfalse positive here already reads as ~1 FP/hr and the tuned "
-              "\nthreshold will be jumpy. Two hours or more is worth the wait.")
+    np.save(str(target), combined)
+    print(f"\nwrote {combined.shape} -> {target}")
+    print(f"  stock negatives  {stock_h:6.2f} h")
+    print(f"  your room        {room_h:6.2f} h")
+    print(f"  total            {total_h:6.2f} h")
+
+    # The number that decides whether this was worth doing. find_best_threshold
+    # maximises recall subject to fpph <= target_fp_per_hour, so the whole set
+    # gets a budget of (target x hours) false positives - and every FP the room
+    # block produces eats into the same budget the stock set is already using.
+    budget = cfg.target_fp_per_hour * total_h
+    print(f"\nAt target_fp_per_hour {cfg.target_fp_per_hour}, the tuned "
+          f"threshold gets a budget of\n{budget:.1f} false positives across "
+          f"all {total_h:.2f} h. The 2026-08-15 sweep spent 3 of those on the "
+          f"stock\nset alone, so a candidate that fires even once on your room "
+          f"is now pushed to a\nhigher threshold than one that never does - "
+          f"which is the discrimination the\neval was missing entirely.")
+    if room_h < 0.5:
+        print(f"\nNOTE: {room_h:.2f} h of room audio is a thin gate - it can "
+              f"pass a model simply\nbecause those minutes held nothing "
+              f"confusable. Adding more later is cheap:\nre-run this, delete "
+              f"pipeline_results.json, then Train.bat --from train.")
     return 0
 
 
