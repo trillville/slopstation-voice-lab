@@ -56,9 +56,12 @@ for _stream in (sys.stdout, sys.stderr):
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "alfred.yaml"
-# v1.0 is the model in the repo now, so the retrain is v1.1 - two files called
-# v1.0 with different weights is the one confusion that costs a whole evening.
-VERSION = "v1.1"
+# Bump this for every retrain whose DATA changed - two files with the same
+# version and different weights is the confusion that costs an evening, and
+# stale same-version rows in pipeline_results.json get skipped as already
+# done. v1.0 = the original sweep; v1.1 = SNR fix, no game audio; v1.2 = game
+# backgrounds + fresh held-out negatives (recorded 2026-08-16).
+VERSION = "v1.2"
 
 STAGES = ["generate", "augment", "features", "train"]
 
