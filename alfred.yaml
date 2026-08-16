@@ -70,6 +70,14 @@ augmentation:
   # picks a background with random.choice over FILES, so weight is per file:
   # 774 MUSAN against 600 room clips means MUSAN wins 56% of mixes. 40 minutes
   # each of film and gameplay (~600 clips each) puts the room at ~61%.
+  #
+  # People TALKING over these recordings is good data, not contamination.
+  # Live conversation - your voices, direct path, real reverb - is the hardest
+  # negative class and the one this pool covers worst: MUSAN has no speech by
+  # design and film dialogue is compressed TV speech off a speaker. The one
+  # rule is that nobody says the wake phrase or its fragments: in a background
+  # it becomes a NEGATIVE and teaches the model to ignore its own phrase, and
+  # in held-out audio it punishes correct fires.
   background_paths: ["data/backgrounds"]
   rir_paths: ["data/rirs"]
 

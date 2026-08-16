@@ -1,8 +1,18 @@
 """Rank candidate models on REAL audio through the runtime that will run them.
 
-    Bench.bat                            every .onnx in artifacts\\
+    Bench.bat                    artifacts\\*.onnx PLUS the vendored models in
+                                 k15\\voice\\models - "does it beat the model the
+                                 K15 already runs" is the default question, so
+                                 the incumbent is in the lineup by default
     Bench.bat --models a.onnx b.onnx     just these
     Bench.bat --target-fa 0.5            allow 0.5 false accepts/hour
+    Bench.bat --noise-only               negatives only, ranked by noise
+                                 ceiling. The one comparison that works ACROSS
+                                 phrases: recall cannot be compared between
+                                 hey_jarvis and hey_alfred (different words),
+                                 but how hard the same room audio pushes each
+                                 model can - which is the experiment for "is
+                                 the phrase itself the problem"
 
 THIS IS THE ONLY EVAL THAT HAS EVER RANKED THESE MODELS CORRECTLY.
 
@@ -45,6 +55,7 @@ that path has no clipping and no reset, so it is the arbiter.
 """
 import argparse
 import json
+import math
 import sys
 import wave
 from pathlib import Path
@@ -54,6 +65,8 @@ import numpy as np
 for _stream in (sys.stdout, sys.stderr):
     _stream.reconfigure(encoding="utf-8", errors="replace")
 
+HERE = Path(__file__).resolve().parent          # .../wake-training, in the repo
+
 CHUNK = 1280                    # oWW's native 80 ms hop
 RATE = 16000
 # After a detection the live agent calls model.reset(), so one loud moment can
@@ -62,6 +75,22 @@ RATE = 16000
 # the same count for far less compute. 1.5 s covers oWW's score decay.
 REFRACTORY_HOPS = 19
 THRESHOLDS = np.round(np.arange(0.02, 1.00, 0.02), 2)
+
+
+def wilson(k, n, z=1.96):
+    """95% interval on a proportion, so the table can say how much of a recall
+    difference is real. With 20 positives the half-width around 0.9 is ~0.13 -
+    i.e. a 5-point gap between two models is NOISE at this sample size, and the
+    2026-08-16 bench nearly shipped a decision on exactly such a gap. Wilson
+    rather than normal approximation because n is small and p is near 1, which
+    is where the normal interval is at its worst."""
+    if not n:
+        return 0.0, 0.0
+    p = k / n
+    d = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return max(0.0, centre - half), min(1.0, centre + half)
 
 
 def load_wav(path):
@@ -101,8 +130,9 @@ def bench(model_path, positives, negatives):
 
     # One peak per positive clip: each clip is ONE utterance, so its peak is
     # the model's best answer for that utterance, and recall at threshold T is
-    # simply the fraction of clips whose peak clears T.
-    peaks = np.array([trace(m, load_wav(p)).max() for p in positives])
+    # simply the fraction of clips whose peak clears T. Empty in --noise-only.
+    peaks = (np.array([trace(m, load_wav(p)).max() for p in positives])
+             if positives else np.zeros(0))
 
     neg_traces, hours = [], 0.0
     for p in negatives:
@@ -116,13 +146,16 @@ def operating_point(peaks, neg_traces, hours, target_fa):
     """Lowest threshold whose false-accept rate fits the budget, and the recall
     it buys. Lowest rather than highest because recall falls monotonically as
     the threshold rises - so the cheapest threshold that satisfies the budget
-    is also the best one that does."""
+    is also the best one that does. Rows carry the raw EVENT COUNT alongside
+    the rate: with thin negatives the count is the honest number (0.22 h means
+    one event IS 4.5/hr, and a rate printed alone hides that resolution)."""
     rows = []
     for t in THRESHOLDS:
         fa = sum(count_crossings(s, t) for s in neg_traces)
-        rows.append((float(t), float((peaks >= t).mean()),
+        rec = float((peaks >= t).mean()) if peaks.size else None
+        rows.append((float(t), rec, int(fa),
                      fa / hours if hours else float("nan")))
-    ok = [r for r in rows if r[2] <= target_fa]
+    ok = [r for r in rows if r[3] <= target_fa]
     return (ok[0] if ok else None), rows
 
 
@@ -137,26 +170,43 @@ def main():
                     help="default: <root>/data/heldout - room/game, no wake word")
     ap.add_argument("--target-fa", type=float, default=1.0,
                     help="false accepts per hour the threshold must fit inside")
+    ap.add_argument("--noise-only", action="store_true",
+                    help="skip positives; rank by noise ceiling (cross-phrase)")
     ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args()
 
     root = args.root.resolve()
     pos_dir = args.positives or root / "bench" / "positives"
     neg_dir = args.negatives or root / "data" / "heldout"
-    positives = sorted(Path(pos_dir).glob("**/*.wav"))
+    positives = [] if args.noise_only else sorted(Path(pos_dir).glob("**/*.wav"))
     negatives = sorted(Path(neg_dir).glob("**/*.wav"))
-    models = args.models or sorted((root / "artifacts").glob("*.onnx"))
 
-    if not positives:
+    models = args.models
+    if not models:
+        # The vendored models are the incumbents. The default question is
+        # "does anything in artifacts beat what the K15 already runs", so they
+        # are in the lineup unless --models says otherwise - the 2026-08-16
+        # comparison only happened because v1.0 was copied in by hand, and a
+        # bench that only sees the new candidates can only ever crown one.
+        models = (sorted((root / "artifacts").glob("*.onnx"))
+                  + sorted((HERE.parent / "k15" / "voice" / "models")
+                           .glob("*.onnx")))
+        seen = set()
+        models = [m for m in models
+                  if not (m.resolve() in seen or seen.add(m.resolve()))]
+
+    if not positives and not args.noise_only:
         sys.exit(f"no positives under {pos_dir}\n"
                  f"Record yourself saying the wake phrase and split it with "
-                 f"k15/voice/bench/slice_utterances.py - ONE utterance per wav.")
+                 f"k15/voice/bench/slice_utterances.py - ONE utterance per wav "
+                 f"(or pass --noise-only for a negatives-only comparison).")
     if not negatives:
         sys.exit(f"no negatives under {neg_dir}")
     if not models:
-        sys.exit(f"no .onnx under {root / 'artifacts'}")
+        sys.exit(f"no .onnx under {root / 'artifacts'} or the repo models dir")
 
-    print(f"positives  {len(positives)} utterances")
+    print(f"positives  {len(positives)} utterances"
+          + (" (--noise-only)" if args.noise_only else ""))
     print(f"negatives  {len(negatives)} files from {neg_dir}")
     print(f"budget     <= {args.target_fa} false accepts/hour\n")
 
@@ -164,42 +214,78 @@ def main():
     for mp in models:
         peaks, neg_traces, hours = bench(mp, positives, negatives)
         best, rows = operating_point(peaks, neg_traces, hours, args.target_fa)
-        ceiling = max((s.max() for s in neg_traces), default=0.0)
-        results[Path(mp).stem] = {
-            "peak_median": round(float(np.median(peaks)), 3),
-            "peak_min": round(float(peaks.min()), 3),
-            "noise_ceiling": round(float(ceiling), 3),
+        ceiling = max((float(s.max()) for s in neg_traces), default=0.0)
+        entry = {
+            "n_positives": int(peaks.size),
+            "peak_median": round(float(np.median(peaks)), 3) if peaks.size else None,
+            "peak_min": round(float(peaks.min()), 3) if peaks.size else None,
+            "noise_ceiling": round(ceiling, 3),
             "negative_hours": round(hours, 2),
-            "threshold": best[0] if best else None,
-            "recall": round(best[1], 3) if best else None,
-            "fa_per_hour": round(best[2], 2) if best else None,
-            "curve": [{"t": t, "recall": round(r, 3), "fa_hr": round(f, 2)}
-                      for t, r, f in rows],
+            "threshold": None, "recall": None, "recall_ci": None,
+            "fa_events": None, "fa_per_hour": None,
+            "curve": [{"t": t, "recall": None if r is None else round(r, 3),
+                       "fa_events": e, "fa_hr": round(f, 2)}
+                      for t, r, e, f in rows],
         }
+        if best and peaks.size:
+            t = best[0]
+            k = int((peaks >= t).sum())
+            lo, hi = wilson(k, int(peaks.size))
+            entry.update(threshold=t, recall=round(k / peaks.size, 3),
+                         recall_ci=[round(lo, 3), round(hi, 3)],
+                         fa_events=int(best[2]), fa_per_hour=round(best[3], 2))
+        results[Path(mp).stem] = entry
         print(f"  scored {Path(mp).stem}", flush=True)
 
-    print(f"\n{'model':34}{'peak med':>10}{'peak min':>10}{'noise':>8}"
-          f"{'thresh':>8}{'recall':>9}{'FA/hr':>8}")
-    print("-" * 87)
-    # Best first: recall at the operating point IS the ranking. A model with no
-    # operating point cannot hit the budget at any threshold and sorts last.
-    for name, r in sorted(results.items(),
-                          key=lambda kv: (kv[1]["recall"] is not None,
-                                          kv[1]["recall"] or 0), reverse=True):
-        if r["recall"] is None:
-            print(f"{name:34}{r['peak_median']:>10.3f}{r['peak_min']:>10.3f}"
-                  f"{r['noise_ceiling']:>8.3f}     -- never fits the budget --")
-            continue
-        print(f"{name:34}{r['peak_median']:>10.3f}{r['peak_min']:>10.3f}"
-              f"{r['noise_ceiling']:>8.3f}{r['threshold']:>8.2f}"
-              f"{r['recall']:>8.0%}{r['fa_per_hour']:>8.2f}")
+    hours = max(r["negative_hours"] for r in results.values())
+    if args.noise_only:
+        print(f"\n{'model':36}{'noise ceiling':>14}{'neg hours':>10}")
+        print("-" * 60)
+        for name, r in sorted(results.items(),
+                              key=lambda kv: kv[1]["noise_ceiling"]):
+            print(f"{name:36}{r['noise_ceiling']:>14.3f}"
+                  f"{r['negative_hours']:>10.2f}")
+        print("\nLower is better: the ceiling is where the room can push a "
+              "model WITHOUT the\nphrase being said. It is the one number "
+              "comparable across phrases - recall\nnever is - so jarvis-vs-"
+              "alfred rows here are a read on the phrase itself.")
+    else:
+        print(f"\n{'model':36}{'peak med':>9}{'peak min':>9}{'noise':>7}"
+              f"{'thresh':>7}{'recall':>8}{'95% CI':>12}{'FA':>4}{'/hr':>6}")
+        print("-" * 98)
+        # Best first: recall at the operating point IS the ranking. A model
+        # with no operating point never fits the budget and sorts last.
+        for name, r in sorted(results.items(),
+                              key=lambda kv: (kv[1]["recall"] is not None,
+                                              kv[1]["recall"] or 0),
+                              reverse=True):
+            if r["recall"] is None:
+                print(f"{name:36}{r['peak_median']:>9.3f}{r['peak_min']:>9.3f}"
+                      f"{r['noise_ceiling']:>7.3f}"
+                      f"   -- never fits the budget --")
+                continue
+            lo, hi = r["recall_ci"]
+            print(f"{name:36}{r['peak_median']:>9.3f}{r['peak_min']:>9.3f}"
+                  f"{r['noise_ceiling']:>7.3f}{r['threshold']:>7.2f}"
+                  f"{r['recall']:>7.0%}{f'{lo:.0%}-{hi:.0%}':>12}"
+                  f"{r['fa_events']:>4}{r['fa_per_hour']:>6.2f}")
 
-    print(f"\n'noise' is the highest score any negative audio produced - the "
-          f"floor a\nthreshold has to clear. 'peak min' is the WORST real "
-          f"utterance: if that sits\nbelow the threshold, some way of saying "
-          f"it never works, whatever the median says.")
-    print("\nThe threshold column IS deployable - same runtime, same room, "
-          "same voice.\nStart there, then confirm with --wake-trials on the K15.")
+        n = max(r["n_positives"] for r in results.values())
+        print(f"\nRead the CI before the ranking: with {n} positives, recall "
+              f"is only known to\nthe printed interval (Wilson 95%). Two "
+              f"models whose intervals overlap are NOT\nranked by this table, "
+              f"whatever the point estimates say.")
+        print(f"\n'noise' is the highest score any negative audio produced - "
+              f"the floor a\nthreshold has to clear. 'peak min' is the WORST "
+              f"real utterance: if that sits\nbelow the threshold, some way of "
+              f"saying it never works, whatever the median says.")
+        print("\nThe threshold column IS deployable - same runtime, same "
+              "room, same voice.\nStart there, then confirm with "
+              "--wake-trials on the K15.")
+    if hours:
+        print(f"\nRate resolution: {hours:.2f} h of negatives means one event "
+              f"= {1 / hours:.1f} FA/hr. A budget\nbelow that can only be met "
+              f"by ZERO events at the chosen threshold.")
 
     out = args.json or root / "bench_results.json"
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")

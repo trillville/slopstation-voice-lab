@@ -115,8 +115,19 @@ def patch_augmentation(lo, hi, clean_p):
     Do NOT widen this AND raise augmentation.rounds together: rounds compound
     (round N mixes fresh noise into round N-1's output), so three rounds at
     -5 dB land near -18 dB and teach the model to fire on noise."""
+    import inspect
+
     from livekit.wakeword.data import augment as _aug
     original = _aug.AudioAugmentor.mix_with_background
+    # A monkeypatch rots silently: if upstream renames the parameter, the
+    # override below would still apply and quietly mix at whatever the new
+    # default is - the exact class of failure this file exists to prevent.
+    # Verified against 0.2.1, the latest on PyPI as of 2026-08-16.
+    if "snr_db_range" not in inspect.signature(original).parameters:
+        sys.exit("livekit's mix_with_background no longer takes snr_db_range - "
+                 "the SNR patch would silently do nothing. Re-read "
+                 "data/augment.py and update patch_augmentation before "
+                 "training anything.")
 
     def widened(self, audio, snr_db_range=(lo, hi)):
         if clean_p and random.random() < clean_p:
@@ -208,6 +219,27 @@ def provenance(cfg, snr, clean_p):
     }
 
 
+def tool_versions():
+    """Versions and the code commit, stamped into every result row. The
+    monkeypatch makes results a function of THIS code, not just the config -
+    a row that cannot say which pipeline produced it is unreproducible."""
+    import importlib.metadata as im
+    import subprocess
+    out = {}
+    for pkg in ("livekit-wakeword", "openwakeword", "torch"):
+        try:
+            out[pkg] = im.version(pkg)
+        except Exception:
+            out[pkg] = None
+    try:
+        r = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short",
+                            "HEAD"], capture_output=True, text=True, timeout=10)
+        out["pipeline_commit"] = r.stdout.strip() or None
+    except Exception:
+        out["pipeline_commit"] = None
+    return out
+
+
 def param_count(pt_path):
     import torch
     sd = torch.load(pt_path, map_location="cpu", weights_only=True)
@@ -245,20 +277,48 @@ def run_data_stages(cfg, first):
         run_extraction(cfg)
 
 
-def run_variant(name, over, root, results, artifacts):
+def run_variant(name, over, root, results, artifacts, key, tag, prov):
     # A name with no entry in `variants` is taken as a bare model_size, so
     # `Train.bat large` still works without the yaml having to list it.
     cfg = (load_config(root, over=over) if over is not None
            else load_config(root, size=name))
-    stem = f"{cfg.model_name}_{name}_{VERSION}"
-    print(f"\n=== {name}: {cfg.model.model_type}/{cfg.model.model_size}, "
+    stem = f"{cfg.model_name}_{name}{f'_{tag}' if tag else ''}_{VERSION}"
+    print(f"\n=== {key}: {cfg.model.model_type}/{cfg.model.model_size}, "
           f"{cfg.steps} steps ===", flush=True)
 
     t0 = time.time()
     pt_path = run_train(cfg)
     onnx_path = run_export(cfg)
-    metrics = run_eval(cfg, onnx_path)
+    # The eval is a SMOKE TEST (the saturation note in table has the history):
+    # a crashed smoke test must not discard the training run it follows.
+    try:
+        metrics, eval_err = run_eval(cfg, onnx_path), None
+    except Exception as e:
+        metrics, eval_err = None, f"{type(e).__name__}: {e}"
     minutes = round((time.time() - t0) / 60, 1)
+
+    row = {
+        "params": param_count(pt_path),
+        "onnx_kb": round(onnx_path.stat().st_size / 1024),
+        "train_min": minutes,
+        # export always writes output/<model_name>/<model_name>.onnx and eval
+        # always overwrites <model_name>_det.png, so a second size silently
+        # destroys the first one's artifacts. Copy out before the next run.
+        "onnx": keep(onnx_path, artifacts / f"{stem}.onnx"),
+        "pt": keep(pt_path, artifacts / f"{stem}.pt"),
+        "det_png": keep(cfg.model_output_dir / f"{cfg.model_name}_det.png",
+                        artifacts / f"{stem}_det.png"),
+        # The settings THIS row was measured under. The global _run blob goes
+        # stale the moment a --tag re-run mixes two SNR settings into one
+        # results file; the row is the only record that stays true.
+        "data": dict(prov),
+    }
+    if metrics is None:
+        row["eval_error"] = eval_err
+        results[key] = row
+        print(f"  {key}: trained + exported, EVAL FAILED - artifacts kept "
+              f"({eval_err})", flush=True)
+        return
 
     # TWO operating points, and confusing them is a deployment bug.
     # evaluate.py hardcodes threshold=0.5 "for consistent comparison", so the
@@ -268,48 +328,57 @@ def run_variant(name, over, root, results, artifacts):
     # parity gate (2026-08-13) showed livekit's scores do not transfer to
     # openWakeWord's streaming runtime, so the DEPLOYED number comes from
     # --wake-trials peaks on the K15 and nowhere else.
-    row = {
-        "params": param_count(pt_path),
-        "onnx_kb": round(onnx_path.stat().st_size / 1024),
-        "aut": round(metrics["aut"], 4),
-        "fpph_at_half": round(metrics["fpph"], 3),
-        "recall_at_half": round(metrics["recall"], 4),
-        "accuracy_at_half": round(metrics["accuracy"], 4),
-        "optimal_threshold": round(metrics["optimal_threshold"], 3),
-        "optimal_recall": round(metrics["optimal_recall"], 4),
-        "optimal_fpph": round(metrics["optimal_fpph"], 3),
-        "validation_hours": metrics["validation_hours"],
-        "train_min": minutes,
-        # export always writes output/<model_name>/<model_name>.onnx and eval
-        # always overwrites <model_name>_det.png, so a second size silently
-        # destroys the first one's artifacts. Copy out before the next run.
-        "onnx": keep(onnx_path, artifacts / f"{stem}.onnx"),
-        "pt": keep(pt_path, artifacts / f"{stem}.pt"),
-        "det_png": keep(cfg.model_output_dir / f"{cfg.model_name}_det.png",
-                        artifacts / f"{stem}_det.png"),
-    }
-    results[name] = row
-    print(f"  {name}: {row['optimal_recall']:.1%} recall at "
+    row.update(
+        aut=round(metrics["aut"], 4),
+        fpph_at_half=round(metrics["fpph"], 3),
+        recall_at_half=round(metrics["recall"], 4),
+        accuracy_at_half=round(metrics["accuracy"], 4),
+        optimal_threshold=round(metrics["optimal_threshold"], 3),
+        optimal_recall=round(metrics["optimal_recall"], 4),
+        optimal_fpph=round(metrics["optimal_fpph"], 3),
+        validation_hours=metrics["validation_hours"],
+    )
+    results[key] = row
+    print(f"  {key}: {row['optimal_recall']:.1%} recall at "
           f"{row['optimal_fpph']} FP/hr over {row['validation_hours']:.1f} h "
           f"({minutes} min)", flush=True)
 
 
 def table(results, root):
-    print(f"\n{'':29}{'--- at fixed 0.5 ---':>26}{'--- tuned ---':>26}")
-    print(f"{'size':10}{'params':>9}{'onnx':>10}{'AUT':>9}{'FPPH':>8}"
+    print(f"\n{'':37}{'--- at fixed 0.5 ---':>26}{'--- tuned ---':>26}")
+    print(f"{'variant':18}{'params':>9}{'onnx':>10}{'AUT':>9}{'FPPH':>8}"
           f"{'recall':>9}{'thresh':>9}{'recall':>9}{'FPPH':>8}{'train':>8}")
-    print("-" * 89)
-    for size, r in results.items():
-        if size.startswith("_"):
+    print("-" * 97)
+    for key, r in results.items():
+        if key.startswith("_"):
             continue
         if "error" in r:
-            print(f"{size:10}FAILED - {r['error'][:60]}")
+            print(f"{key:18}FAILED - {r['error'][:60]}")
             continue
-        print(f"{size:10}{r['params']/1000:>8.1f}k{r['onnx_kb']:>7} KB"
+        if "eval_error" in r:
+            print(f"{key:18}trained OK, eval FAILED (artifacts kept) - "
+                  f"{r['eval_error'][:40]}")
+            continue
+        print(f"{key:18}{r['params']/1000:>8.1f}k{r['onnx_kb']:>7} KB"
               f"{r['aut']:>9.4f}{r['fpph_at_half']:>8.2f}"
               f"{r['recall_at_half']:>9.1%}{r['optimal_threshold']:>9.2f}"
               f"{r['optimal_recall']:>9.1%}{r['optimal_fpph']:>8.2f}"
               f"{r['train_min']:>7.1f}m")
+    # The banner that should have been here from the start: on both sweeps so
+    # far EVERY candidate landed on the same tuned numbers with a DET curve
+    # pinned flat against the axes, and each time the table was read as a
+    # result instead of as a saturated test. Detect it and say it.
+    live = [r for k, r in results.items() if not k.startswith("_")
+            and "error" not in r and "eval_error" not in r]
+    if len(live) >= 2 and (
+            max(r["optimal_recall"] for r in live)
+            - min(r["optimal_recall"] for r in live) < 0.005
+            and max(r["optimal_fpph"] for r in live)
+            - min(r["optimal_fpph"] for r in live) < 0.02):
+        print("\nSATURATED: every variant landed within 0.5% recall and 0.02 "
+              "FPPH of the rest.\nThis table cannot rank them - it is a smoke "
+              "test that they all passed. The\nranking, if there is one, "
+              "comes from Bench.bat.")
     hrs = next((r.get("validation_hours") for r in results.values()
                 if isinstance(r, dict) and "validation_hours" in r), None)
     print(f"\nFPPH is measured over {hrs} h of validation negatives. If "
@@ -346,8 +415,16 @@ def main():
                     metavar=("LO", "HI"), help="background mix range in dB")
     ap.add_argument("--clean", type=float, default=0.25,
                     help="fraction of clips left un-mixed")
+    ap.add_argument("--tag", default="",
+                    help="suffix for result keys and artifact names. Use when "
+                         "re-running with DIFFERENT data settings (an --snr "
+                         "A/B): without it the second run's artifacts "
+                         "overwrite the first's and its finished rows are "
+                         "skipped as already done")
     ap.add_argument("--list", action="store_true", help="show state and exit")
     args = ap.parse_args()
+    if args.tag and not all(c.isalnum() or c in "._-" for c in args.tag):
+        sys.exit("--tag must be filename-safe: letters, digits, . _ -")
 
     specs = variant_specs()
     names = args.variants or list(specs) or ["medium"]
@@ -379,19 +456,23 @@ def main():
     results = {}
     if results_path.exists():
         results = json.loads(results_path.read_text(encoding="utf-8"))
+    prov = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
+            "rounds": cfg0.augmentation.rounds, **tool_versions()}
     for name in names:
-        if name in results and "error" not in results[name]:
-            print(f"=== {name}: already in {results_path.name}, skipping ===")
+        key = f"{name}@{args.tag}" if args.tag else name
+        if key in results and "error" not in results[key]:
+            print(f"=== {key}: already in {results_path.name}, skipping ===")
             continue
         try:
-            run_variant(name, specs.get(name), root, results, artifacts)
+            run_variant(name, specs.get(name), root, results, artifacts,
+                        key, args.tag, prov)
         except Exception:
             # A failed variant is recorded and the sweep continues - an
             # unattended run should come back with results and one error, not
             # one error.
             traceback.print_exc()
-            results[name] = {"error": traceback.format_exc(limit=1).strip()}
-            print(f"  {name} FAILED - continuing", flush=True)
+            results[key] = {"error": traceback.format_exc(limit=1).strip()}
+            print(f"  {key} FAILED - continuing", flush=True)
         results["_run"] = provenance(load_config(root), args.snr, args.clean)
         results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 

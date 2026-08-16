@@ -5,7 +5,12 @@
 Runs on the K15, because the point is THIS mic in THIS room: the recording
 becomes background audio a custom wake model is trained against, and the
 model's real failure mode is a TV talking through the couch mic. Play a
-dialogue-heavy film (not music) at normal listening volume and leave the room.
+dialogue-heavy film or a game at normal listening volume. Talking over it is
+GOOD data - live voices are the hardest negative class, and the one MUSAN
+(no speech by design) and TV dialogue (compressed, off a speaker) cover
+worst. One rule: nobody says the wake phrase. In a training background it
+becomes a negative and teaches the model to ignore its own phrase; in a
+held-out recording it punishes correct fires.
 
 Close the voice supervisor first - it holds the same mic, and two readers on
 one endpoint is a fight neither wins.
