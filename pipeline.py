@@ -56,7 +56,9 @@ for _stream in (sys.stdout, sys.stderr):
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "alfred.yaml"
-VERSION = "v1.0"                        # the suffix audio.py's parser requires
+# v1.0 is the model in the repo now, so the retrain is v1.1 - two files called
+# v1.0 with different weights is the one confusion that costs a whole evening.
+VERSION = "v1.1"
 
 SIZES = ["medium", "large"]             # small scored 0.083 on real voice - out
 STAGES = ["generate", "augment", "features", "train"]
@@ -252,6 +254,17 @@ def table(results, root):
           "voice.wakeThreshold from the peak\nvalues that --wake-trials logs "
           "on the K15.")
     print(f"\nartifacts: {root / 'artifacts'}")
+    # The size is in the artifact name so several can sit side by side; the
+    # DEPLOYED name must not carry it. audio.py derives the spoken phrase with
+    # rsplit("_v", 1)[0].replace("_", " "), so hey_alfred_medium_v1.1.onnx
+    # would have the agent listening for "hey alfred medium".
+    print("\nTo deploy one, copy it to k15/voice/models/ RENAMED - the size "
+          "must come out\nof the filename or it becomes part of the wake "
+          "phrase:")
+    for size in results:
+        if size.startswith("_") or "error" in results[size]:
+            continue
+        print(f"    {results[size]['onnx']}  ->  hey_alfred_{VERSION}.onnx")
 
 
 def main():
