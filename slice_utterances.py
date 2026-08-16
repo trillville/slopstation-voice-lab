@@ -16,9 +16,11 @@ silence splitter: openWakeWord scores a ~2 s window ENDING at the current hop,
 so a clip trimmed tight to the phrase gives the model a window that is mostly
 empty and it scores low for reasons that have nothing to do with the model.
 Every clip therefore carries LEAD_S of whatever preceded it, clamped so it can
-never reach back into the previous utterance. Clips that could not get a full
-lead-in are reported rather than silently kept, because they will read as false
-rejects and drag a model's score down unfairly.
+never reach back into the previous utterance. Clips that could not get a
+usable lead-in are DROPPED, not written: measured 2026-08-16, five of seven
+short-lead clips scored 0.009-0.19 against their session's median of 0.68 -
+false rejects for every model at once - and "warn but keep" turned into a
+mid-session judgement call the numbers had already made.
 """
 import sys
 import wave
@@ -45,7 +47,7 @@ TAIL_S = 2.0
 BRIDGE_S = 0.35                 # "hey ... alfred" is one utterance, not two
 MIN_UTTERANCE_S = 0.25
 MAX_UTTERANCE_S = 3.0
-MIN_LEAD_S = 1.5                # below this the window is short - warn
+MIN_LEAD_S = 1.5                # below this the clip is dropped, not written
 
 
 def voiced_frames(pcm):
@@ -92,32 +94,37 @@ def main():
     keep = [(a, b) for a, b in runs(mask)
             if MIN_UTTERANCE_S <= (b - a + 1) * FRAME / RATE <= MAX_UTTERANCE_S]
 
-    short, prev_end = [], 0
+    dropped, written, prev_end = 0, 0, 0
     for i, (a, b) in enumerate(keep):
         start_s, end_s = a * FRAME, (b + 1) * FRAME
         # Never reach back into the previous utterance - a clip holding two
         # phrases is one detection, not two, and quietly deflates recall.
         lead = min(int(LEAD_S * RATE), start_s - prev_end)
-        if lead < MIN_LEAD_S * RATE:
-            short.append(i)
-        clip = pcm[max(0, start_s - lead):min(len(pcm), end_s + int(TAIL_S * RATE))]
         prev_end = end_s
+        # Dropped, not warned about: a short-lead clip reads as a false reject
+        # for EVERY candidate (measured - see the docstring), so keeping it
+        # punishes the whole bench for the recording's cadence. The utterance
+        # itself is fine; it just needed the ~3 s pause it did not get.
+        if lead < MIN_LEAD_S * RATE:
+            dropped += 1
+            continue
+        clip = pcm[max(0, start_s - lead):min(len(pcm), end_s + int(TAIL_S * RATE))]
+        written += 1
         with wave.open(str(dest / f"utt_{i:03d}.wav"), "wb") as o:
             o.setnchannels(1)
             o.setsampwidth(2)
             o.setframerate(RATE)
             o.writeframes(clip.tobytes())
 
-    print(f"{len(keep)} utterances -> {dest}")
+    print(f"{written} utterances -> {dest}")
     print("Check that count against how many times you actually said it. Too "
           "few means\nthe gate missed the quiet ones; too many means the room "
           "moved between takes.")
-    if short:
-        print(f"\nWARNING: {len(short)} clip(s) got under {MIN_LEAD_S}s of "
-              f"lead-in ({short[:8]}).\nopenWakeWord scores a ~2 s trailing "
-              f"window, so those start part-filled and will\nread as false "
-              f"rejects. Leave ~3 s between repetitions and re-record, or "
-              f"delete them.")
+    if dropped:
+        print(f"\n{dropped} utterance(s) DROPPED: under {MIN_LEAD_S}s of gap "
+              f"since the previous one,\nso openWakeWord's ~2 s window could "
+              f"not fill and they would read as false\nrejects for every "
+              f"model. Say those again with ~3 s pauses if the loss hurts.")
 
 
 if __name__ == "__main__":
