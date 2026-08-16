@@ -64,6 +64,27 @@ SIZES = ["medium", "large"]             # small scored 0.083 on real voice - out
 STAGES = ["generate", "augment", "features", "train"]
 
 
+def check_not_compounding(lo, rounds):
+    """Refuse a widened SNR stacked on multiple augmentation rounds.
+
+    Round N mixes fresh noise into round N-1's OUTPUT, so the effective SNR
+    compounds: three rounds drawing from a range whose floor is 0 dB lands
+    somewhere near -18 dB, which is not "robust to noise", it is a model that
+    has learned to fire on noise. livekit's own prod.yaml uses rounds: 3 and
+    gets away with it only because its floor is +5 dB.
+
+    A guard rather than a comment because the comment already existed and the
+    failure costs a three-hour run to discover."""
+    if rounds > 1 and lo < 5.0:
+        sys.exit(
+            f"refusing: snr floor {lo:+g} dB with augmentation.rounds={rounds}.\n"
+            f"Rounds COMPOUND - each one re-mixes the previous round's output, "
+            f"so {rounds} rounds from a {lo:+g} dB floor lands far below it and "
+            f"teaches the model to fire on noise.\n"
+            f"Pick one: keep rounds at 1 (what alfred.yaml ships), or raise "
+            f"--snr's floor to +5 or above.")
+
+
 def patch_augmentation(lo, hi, clean_p):
     """Widen the background-mix SNR and let some clips through clean.
 
@@ -295,9 +316,12 @@ def main():
           f"{'MISSING' if not val.exists() else f'{val.stat().st_size/1e6:.0f} MB'}"
           f"  <- make_validation.py replaces this with your room")
     print(f"sizes      {sizes}   stages from '{args.first}'")
+    print(f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
+          f"{args.clean:.0%} clean, rounds {cfg0.augmentation.rounds}")
     if args.list:
         return 0
 
+    check_not_compounding(args.snr[0], cfg0.augmentation.rounds)
     patch_augmentation(args.snr[0], args.snr[1], args.clean)
     run_data_stages(cfg0, args.first)
 
