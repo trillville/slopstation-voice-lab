@@ -287,7 +287,12 @@ def main():
               f"= {1 / hours:.1f} FA/hr. A budget\nbelow that can only be met "
               f"by ZERO events at the chosen threshold.")
 
-    out = args.json or root / "bench_results.json"
+    # --noise-only writes ELSEWHERE by default. Its rows carry recall=None, so
+    # sharing the filename silently destroyed a full bench and left a results
+    # file that looks complete and answers no recall question - which cost a
+    # re-measurement on 2026-08-16 when a threshold had to be read back out.
+    out = args.json or root / ("bench_results.noise.json" if args.noise_only
+                               else "bench_results.json")
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"\nfull curves: {out}")
     return 0
