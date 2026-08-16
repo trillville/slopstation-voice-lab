@@ -60,8 +60,20 @@ CONFIG = HERE / "alfred.yaml"
 # v1.0 with different weights is the one confusion that costs a whole evening.
 VERSION = "v1.1"
 
-SIZES = ["medium", "large"]             # small scored 0.083 on real voice - out
 STAGES = ["generate", "augment", "features", "train"]
+
+# What a VARIANT may override. Everything here affects only training, so every
+# variant trains against byte-identical data and a comparison between them
+# means something.
+#
+# Anything NOT in this set changes what generate/augment/features produce - and
+# since those stages run ONCE and are shared, a variant touching them would be
+# silently trained on the previous variant's data. That is the same class of
+# mistake as the +5..+15 dB SNR: not wrong loudly, wrong quietly. To sweep one
+# of those, edit alfred.yaml and run the whole pipeline again.
+TRAINING_ONLY = {"model", "steps", "learning_rate", "weight_decay",
+                 "label_smoothing", "max_negative_weight", "target_fp_per_hour",
+                 "batch_n_per_class"}
 
 
 def check_not_compounding(lo, rounds):
@@ -116,7 +128,35 @@ def patch_augmentation(lo, hi, clean_p):
           f"(livekit default: +5..+15 dB, 0% clean)", flush=True)
 
 
-def load_config(root, size=None):
+def merge(base, over):
+    """Recursive dict overlay, so a variant can set model.model_size without
+    also having to restate model_type."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(
+            out.get(k), dict) else v
+    return out
+
+
+def variant_specs():
+    """{name: overrides} from alfred.yaml, refusing any that reach past
+    training into the shared data stages."""
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    specs = raw.get("variants") or {}
+    for name, over in specs.items():
+        bad = set(over) - TRAINING_ONLY
+        if bad:
+            sys.exit(
+                f"variant '{name}' overrides {sorted(bad)}, which change what "
+                f"generate/augment/features produce.\nThose stages run ONCE "
+                f"and are shared by every variant, so this one would train on "
+                f"another\nvariant's data and the comparison would be a lie. "
+                f"Move it into the base config\nand re-run the whole pipeline "
+                f"instead. Overridable: {sorted(TRAINING_ONLY)}")
+    return specs
+
+
+def load_config(root, size=None, over=None):
     """A config with every path resolved against --root and an optional size
     override, built from the raw YAML so the user's file is never rewritten -
     a run that mutates its own input makes itself unreproducible.
@@ -133,6 +173,9 @@ def load_config(root, size=None):
     for key in ("background_paths", "rir_paths"):
         aug[key] = [p if Path(p).is_absolute() else str((root / p).resolve())
                     for p in aug.get(key, [])]
+    raw.pop("variants", None)               # ours, not livekit's schema
+    if over:
+        raw = merge(raw, over)
     if size:
         raw.setdefault("model", {})["model_size"] = size
     cfg = WakeWordConfig(**raw)
@@ -202,10 +245,14 @@ def run_data_stages(cfg, first):
         run_extraction(cfg)
 
 
-def run_size(size, root, results, artifacts):
-    cfg = load_config(root, size)
-    stem = f"{cfg.model_name}_{size}_{VERSION}"
-    print(f"\n=== {size}: train {cfg.steps} steps ===", flush=True)
+def run_variant(name, over, root, results, artifacts):
+    # A name with no entry in `variants` is taken as a bare model_size, so
+    # `Train.bat large` still works without the yaml having to list it.
+    cfg = (load_config(root, over=over) if over is not None
+           else load_config(root, size=name))
+    stem = f"{cfg.model_name}_{name}_{VERSION}"
+    print(f"\n=== {name}: {cfg.model.model_type}/{cfg.model.model_size}, "
+          f"{cfg.steps} steps ===", flush=True)
 
     t0 = time.time()
     pt_path = run_train(cfg)
@@ -241,8 +288,8 @@ def run_size(size, root, results, artifacts):
         "det_png": keep(cfg.model_output_dir / f"{cfg.model_name}_det.png",
                         artifacts / f"{stem}_det.png"),
     }
-    results[size] = row
-    print(f"  {size}: {row['optimal_recall']:.1%} recall at "
+    results[name] = row
+    print(f"  {name}: {row['optimal_recall']:.1%} recall at "
           f"{row['optimal_fpph']} FP/hr over {row['validation_hours']:.1f} h "
           f"({minutes} min)", flush=True)
 
@@ -275,22 +322,22 @@ def table(results, root):
           "voice.wakeThreshold from the peak\nvalues that --wake-trials logs "
           "on the K15.")
     print(f"\nartifacts: {root / 'artifacts'}")
-    # The size is in the artifact name so several can sit side by side; the
-    # DEPLOYED name must not carry it. audio.py derives the spoken phrase with
-    # rsplit("_v", 1)[0].replace("_", " "), so hey_alfred_medium_v1.1.onnx
-    # would have the agent listening for "hey alfred medium".
-    print("\nTo deploy one, copy it to k15/voice/models/ RENAMED - the size "
-          "must come out\nof the filename or it becomes part of the wake "
-          "phrase:")
-    for size in results:
-        if size.startswith("_") or "error" in results[size]:
-            continue
-        print(f"    {results[size]['onnx']}  ->  hey_alfred_{VERSION}.onnx")
+    # This table cannot pick a winner and never could. On 2026-08-16 both
+    # surviving sizes landed on threshold 0.18 with ~99.8% recall and DET
+    # curves pinned flat against both axes - a saturated test, which ranks
+    # nothing. Bench.bat is the eval that does, on real voice through the
+    # runtime that will actually run the model.
+    print("\nNEXT: Bench.bat. Nothing above ranks these candidates - the "
+          "synthetic eval is\nsaturated (both sizes ace it). bench_real.py "
+          "scores them on your voice, in your\nroom, under openWakeWord, and "
+          "that ranking is the one that has ever been right.")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("sizes", nargs="*", default=None, help=f"default: {SIZES}")
+    ap.add_argument("variants", nargs="*", default=None,
+                    help="names from alfred.yaml's `variants:` (default: all). "
+                         "A name with no entry is taken as a bare model_size.")
     ap.add_argument("--root", type=Path, default=Path(r"C:\Users\tillm\wake"),
                     help="where data/, output/ and the venv live (not the repo)")
     ap.add_argument("--from", dest="first", choices=STAGES, default="generate",
@@ -302,7 +349,8 @@ def main():
     ap.add_argument("--list", action="store_true", help="show state and exit")
     args = ap.parse_args()
 
-    sizes = args.sizes or SIZES
+    specs = variant_specs()
+    names = args.variants or list(specs) or ["medium"]
     root = args.root.resolve()
     artifacts = root / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -315,7 +363,7 @@ def main():
     print(f"validation {val.name}: "
           f"{'MISSING' if not val.exists() else f'{val.stat().st_size/1e6:.0f} MB'}"
           f"  <- make_validation.py replaces this with your room")
-    print(f"sizes      {sizes}   stages from '{args.first}'")
+    print(f"variants   {names}   stages from '{args.first}'")
     print(f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
           f"{args.clean:.0%} clean, rounds {cfg0.augmentation.rounds}")
     if args.list:
@@ -331,19 +379,20 @@ def main():
     results = {}
     if results_path.exists():
         results = json.loads(results_path.read_text(encoding="utf-8"))
-    for size in sizes:
-        if size in results and "error" not in results[size]:
-            print(f"=== {size}: already in {results_path.name}, skipping ===")
+    for name in names:
+        if name in results and "error" not in results[name]:
+            print(f"=== {name}: already in {results_path.name}, skipping ===")
             continue
         try:
-            run_size(size, root, results, artifacts)
+            run_variant(name, specs.get(name), root, results, artifacts)
         except Exception:
-            # A failed size is recorded and the sweep continues - an unattended
-            # run should come back with results and one error, not one error.
+            # A failed variant is recorded and the sweep continues - an
+            # unattended run should come back with results and one error, not
+            # one error.
             traceback.print_exc()
-            results[size] = {"error": traceback.format_exc(limit=1).strip()}
-            print(f"  {size} FAILED - continuing", flush=True)
-        results["_run"] = provenance(load_config(root, size), args.snr, args.clean)
+            results[name] = {"error": traceback.format_exc(limit=1).strip()}
+            print(f"  {name} FAILED - continuing", flush=True)
+        results["_run"] = provenance(load_config(root), args.snr, args.clean)
         results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     table(results, root)

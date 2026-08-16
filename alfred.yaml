@@ -55,10 +55,21 @@ output_dir: ./output
 
 augmentation:
   rounds: 1
-  # Globbed **/*.wav, so every subfolder counts: noise/ is MUSAN (774, no
-  # intelligible speech by design), room/ is the sliced film recording, and
-  # game/ is what this attempt adds - games are spectrally a different animal
-  # from dialogue, all percussive transients and compressed VO over a music bed.
+  # Globbed **/*.wav, so every subfolder counts. The pool the model learns to
+  # hear through, and the one place recording effort pays back most:
+  #
+  #   noise/  MUSAN, 774 files. No intelligible speech BY DESIGN - rain, wind,
+  #           DTMF, footsteps. Useless against the thing that actually fires
+  #           this model, which is people talking on television.
+  #   room/   sliced film. Dialogue-heavy, which is the point.
+  #   game/   sliced gameplay. Spectrally a different animal from dialogue -
+  #           percussive transients, compressed VO over a music bed - and the
+  #           source of every confirmed false accept so far.
+  #
+  # Aim for room+game to be at least half the pool, split evenly. The augmenter
+  # picks a background with random.choice over FILES, so weight is per file:
+  # 774 MUSAN against 600 room clips means MUSAN wins 56% of mixes. 40 minutes
+  # each of film and gameplay (~600 clips each) puts the room at ~61%.
   background_paths: ["data/backgrounds"]
   rir_paths: ["data/rirs"]
 
@@ -68,6 +79,25 @@ model:
 
 steps: 100000
 max_negative_weight: 3000.0
+
+# Hyperparameter sweep. Every variant trains against BYTE-IDENTICAL data -
+# generate/augment/features run once and are shared - which is the only reason
+# comparing them means anything. pipeline.py refuses a variant that reaches
+# past training into the data stages (TRAINING_ONLY lists what is allowed);
+# to sweep n_samples or the SNR, change it here and re-run the whole thing.
+#
+# Rank the results with Bench.bat, NOT with the eval table. On both sweeps so
+# far the synthetic eval scored every candidate identically with DET curves
+# flat against the axes - it is saturated and ranks nothing.
+variants:
+  medium:       {model: {model_size: medium}}
+  large:        {model: {model_size: large}}
+  # Does this phrase just want more training? Medium is 12 min at 50k steps,
+  # so 200k is ~70 min - cheap enough to answer rather than guess.
+  medium-200k:  {model: {model_size: medium}, steps: 200000}
+  # The stock hey_jarvis that outperformed all of this uses a DNN head, not
+  # conv_attention. Uncomment to find out whether the head is the difference.
+  # dnn-medium: {model: {model_type: dnn, model_size: medium}}
 
 # The ceiling find_best_threshold optimises recall against. Only means anything
 # once make_validation.py has replaced the validation set with real room audio;
