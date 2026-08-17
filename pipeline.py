@@ -270,6 +270,36 @@ def keep(src, dest):
     return None
 
 
+def data_stamp_path(cfg):
+    return Path(cfg.model_output_dir) / "data_settings.json"
+
+
+def write_data_stamp(cfg, prov):
+    """Record, NEXT TO THE FEATURES, the settings that actually produced them.
+
+    Provenance used to stamp args.snr - what was ASKED for on this invocation,
+    not what the .npy files on disk contain. Those differ the moment --from
+    train skips augment, and on 2026-08-16 that silently trained medium-400k
+    and dnn-medium on a -10..+15 dataset left behind by an earlier run while
+    the results file recorded [0, 20]. Two void runs, no signal in the logs.
+    The stamp travels with the data, so a later run reads the truth instead of
+    re-asserting its own arguments."""
+    try:
+        p = data_stamp_path(cfg)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(prov, indent=2), encoding="utf-8")
+    except OSError as e:
+        print(f"[warn] could not write {p}: {e}")
+
+
+def read_data_stamp(cfg):
+    """What the features on disk were actually built with, or None."""
+    try:
+        return json.loads(data_stamp_path(cfg).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def run_data_stages(cfg, first):
     """generate/augment/features, skipping everything before `first`.
 
@@ -505,6 +535,34 @@ def main():
                 print(f"  {k:22} snr={snr} clean={dat.get('clean_fraction')} "
                       f"rir={dat.get('rir_p')} commit={dat.get('pipeline_commit')}"
                       f"{same}")
+    # What the models will ACTUALLY train on. Before the --list return, because
+    # this is the line that would have saved two runs: --from train reuses
+    # whatever augment last wrote, which on 2026-08-16 was a -10..+15 dataset
+    # from an earlier experiment, while the results file said [0, 20].
+    asked = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
+             "rir_p": args.rir, "rounds": cfg0.augmentation.rounds}
+    rebuilding = STAGES.index(args.first) <= STAGES.index("augment")
+    on_disk = read_data_stamp(cfg0)
+    prov = dict(asked) if rebuilding else {**(on_disk or asked),
+                                           "data_stamp": bool(on_disk)}
+    prov.update(tool_versions())
+    if not rebuilding:
+        if on_disk and on_disk.get("snr_db_range") != list(args.snr):
+            print(f"\n*** STALE DATA: the features on disk were built with "
+                  f"snr={on_disk['snr_db_range']},\n    not the "
+                  f"snr={list(args.snr)} this run asks for. --from "
+                  f"{args.first} does NOT rebuild\n    them, so that is what "
+                  f"these models will train on. Results are stamped with\n"
+                  f"    the real value. Use --from augment to change it.\n",
+                  flush=True)
+        elif not on_disk:
+            print(f"\n[warn] no data_settings.json beside the features: they "
+                  f"predate this stamping,\n       so provenance falls back "
+                  f"to the arguments and may be wrong. --from augment\n"
+                  f"       rebuilds and records the truth.\n", flush=True)
+        else:
+            print(f"data       features built with snr="
+                  f"{on_disk['snr_db_range']} (matches this run)")
     if args.list:
         return 0
 
@@ -527,9 +585,9 @@ def main():
     results = {}
     if results_path.exists():
         results = json.loads(results_path.read_text(encoding="utf-8"))
-    prov = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
-            "rir_p": args.rir, "rounds": cfg0.augmentation.rounds,
-            **tool_versions()}
+    if rebuilding:
+        # The data stages ran, so the arguments ARE the truth now.
+        write_data_stamp(cfg0, asked)
     for name in names:
         key = f"{name}@{args.tag}" if args.tag else name
         if key in results and "error" not in results[key]:
