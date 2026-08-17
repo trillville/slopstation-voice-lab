@@ -475,6 +475,24 @@ def main():
     print(f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
           f"{args.clean:.0%} clean, rir p={args.rir}, "
           f"rounds {cfg0.augmentation.rounds}")
+    # What is ALREADY trained, and under what. An A/B is only an A/B if the
+    # two rows differ, and on 2026-08-16 a `--tag snr-neg10` run on a checkout
+    # three commits stale trained at the OLD (0, 20) range and produced a
+    # perfect duplicate of `medium` wearing a label that said otherwise. The
+    # per-row provenance caught it afterwards; showing it here catches it
+    # before the hour is spent.
+    if results_path.exists():
+        prior = json.loads(results_path.read_text(encoding="utf-8"))
+        rows = [(k, v.get("data") or {}) for k, v in prior.items()
+                if not k.startswith("_")]
+        if rows:
+            print("\nalready trained:")
+            for k, dat in rows:
+                snr = dat.get("snr_db_range")
+                same = " <- SAME as this run" if snr == list(args.snr) else ""
+                print(f"  {k:22} snr={snr} clean={dat.get('clean_fraction')} "
+                      f"rir={dat.get('rir_p')} commit={dat.get('pipeline_commit')}"
+                      f"{same}")
     if args.list:
         return 0
 
