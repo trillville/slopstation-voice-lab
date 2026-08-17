@@ -99,10 +99,20 @@ max_negative_weight: 3000.0
 # flat against the axes - it is saturated and ranks nothing.
 variants:
   medium:       {model: {model_size: medium}}
-  large:        {model: {model_size: large}}
-  # Does this phrase just want more training? Medium is 12 min at 50k steps,
-  # so 200k is ~70 min - cheap enough to answer rather than guess.
+  # TRAINING LENGTH IS THE ONE LEVER THAT HAS WORKED. Measured 2026-08-16 with
+  # --snr-sweep, recall with the phrase said OVER room audio:
+  #
+  #                      +20dB  +15dB  +10dB   +5dB   0dB
+  #     medium (100k)      39%    35%    23%    17%    9%
+  #     medium-200k        47%    40%    32%    19%   11%
+  #     v1.0 (incumbent)   46%    35%    21%    15%    9%
+  #
+  # 200k beats both at every single SNR. The clean bench had said the opposite
+  # ("more steps just raised signal and noise together") because it could not
+  # see this axis at all - which is why 400k is here rather than a guess.
   medium-200k:  {model: {model_size: medium}, steps: 200000}
+  medium-400k:  {model: {model_size: medium}, steps: 400000}
+  # large loses to medium in every generation on every axis - do not re-add it.
   # The stock hey_jarvis that outperformed all of this uses a DNN head, not
   # conv_attention. Uncomment to find out whether the head is the difference.
   # dnn-medium: {model: {model_type: dnn, model_size: medium}}

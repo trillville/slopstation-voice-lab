@@ -428,14 +428,24 @@ def main():
                     help="where data/, output/ and the venv live (not the repo)")
     ap.add_argument("--from", dest="first", choices=STAGES, default="generate",
                     help="skip stages before this one")
-    # openWakeWord's own recipe, matched exactly: AddBackgroundNoise(
-    # p=0.75, min_snr_in_db=-10, max_snr_in_db=15). The earlier (0, 20) was a
-    # half-measure - it copied the probability and not the range - and left a
-    # 10 dB gap under the floor. --snr-sweep then measured recall collapsing
-    # from ~80% clean to 2-4% at 0 dB across every generation, i.e. the failure
-    # sits entirely in the region training never covered. Reproduce the old
-    # setting with --snr 0 20.
-    ap.add_argument("--snr", nargs=2, type=float, default=(-10.0, 15.0),
+    # (0, 20). NOT openWakeWord's (-10, 15), and that is a MEASURED choice -
+    # do not "fix" it back without re-reading this.
+    #
+    # Copying their floor was tried on 2026-08-16 as a clean single-variable
+    # A/B (medium@snr-neg10 vs medium, identical data). It was refuted, badly:
+    #
+    #     noise ceiling  0.103 -> 0.678   (6x worse)
+    #     separation     5.34x -> 1.07x   (essentially none left)
+    #     threshold       0.10 -> 0.62    (forced up to clear the noise)
+    #     recall @+10 dB   23% -> 14%     (worse on the axis it targeted)
+    #
+    # Why it works for them and not for us: openWakeWord pairs that floor with
+    # ~31,000 h of negatives; we have ~2,000 h. Buried under a -10 dB mix the
+    # phrase is barely there, so what the model can still learn is "noisy =
+    # maybe wake word" - and only a negative corpus an order of magnitude
+    # bigger teaches it otherwise. The floor is not portable without the
+    # corpus that makes it safe.
+    ap.add_argument("--snr", nargs=2, type=float, default=(0.0, 20.0),
                     metavar=("LO", "HI"), help="background mix range in dB")
     ap.add_argument("--clean", type=float, default=0.25,
                     help="fraction of clips left un-mixed")
