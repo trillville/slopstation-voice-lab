@@ -100,6 +100,20 @@ def check_not_compounding(lo, rounds):
             f"--snr's floor to +5 or above.")
 
 
+def patch_rir(p):
+    """Override the reverberation probability livekit hardcodes at its call
+    site. apply_rir(audio) is invoked with no p, so the only way to change it
+    is here. 270 impulse responses are on disk; an empty rir_files list would
+    make this a silent no-op, so the count is printed rather than assumed."""
+    from livekit.wakeword.data import augment as _aug
+    original = _aug.AudioAugmentor.apply_rir
+
+    def with_p(self, audio, p_override=p):
+        return original(self, audio, p_override)
+
+    _aug.AudioAugmentor.apply_rir = with_p
+
+
 def patch_augmentation(lo, hi, clean_p):
     """Widen the background-mix SNR and let some clips through clean.
 
@@ -414,10 +428,24 @@ def main():
                     help="where data/, output/ and the venv live (not the repo)")
     ap.add_argument("--from", dest="first", choices=STAGES, default="generate",
                     help="skip stages before this one")
-    ap.add_argument("--snr", nargs=2, type=float, default=(0.0, 20.0),
+    # openWakeWord's own recipe, matched exactly: AddBackgroundNoise(
+    # p=0.75, min_snr_in_db=-10, max_snr_in_db=15). The earlier (0, 20) was a
+    # half-measure - it copied the probability and not the range - and left a
+    # 10 dB gap under the floor. --snr-sweep then measured recall collapsing
+    # from ~80% clean to 2-4% at 0 dB across every generation, i.e. the failure
+    # sits entirely in the region training never covered. Reproduce the old
+    # setting with --snr 0 20.
+    ap.add_argument("--snr", nargs=2, type=float, default=(-10.0, 15.0),
                     metavar=("LO", "HI"), help="background mix range in dB")
     ap.add_argument("--clean", type=float, default=0.25,
                     help="fraction of clips left un-mixed")
+    # Far-field IS the deployment condition - the talker is metres from the
+    # mic across a reverberant room - so reverberation is not a corner case to
+    # sprinkle on. livekit's default is 0.5; a knob so it can be swept rather
+    # than guessed at, since nothing has measured its effect yet.
+    ap.add_argument("--rir", type=float, default=0.5,
+                    help="probability a clip is convolved with a room impulse "
+                         "response (livekit default 0.5)")
     ap.add_argument("--tag", default="",
                     help="suffix for result keys and artifact names. Use when "
                          "re-running with DIFFERENT data settings (an --snr "
@@ -445,12 +473,22 @@ def main():
           f"  <- make_validation.py replaces this with your room")
     print(f"variants   {names}   stages from '{args.first}'")
     print(f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
-          f"{args.clean:.0%} clean, rounds {cfg0.augmentation.rounds}")
+          f"{args.clean:.0%} clean, rir p={args.rir}, "
+          f"rounds {cfg0.augmentation.rounds}")
     if args.list:
         return 0
 
     check_not_compounding(args.snr[0], cfg0.augmentation.rounds)
     patch_augmentation(args.snr[0], args.snr[1], args.clean)
+    n_rir = sum(len(list(Path(d).glob("**/*.wav")))
+                for d in cfg0.augmentation.rir_paths)
+    if not n_rir:
+        sys.exit(f"no impulse responses under {cfg0.augmentation.rir_paths} - "
+                 f"apply_rir would silently no-op and every positive would "
+                 f"train anechoic, which is the opposite of far-field.")
+    patch_rir(args.rir)
+    print(f"[patch] reverberation p={args.rir} over {n_rir} impulse responses",
+          flush=True)
     run_data_stages(cfg0, args.first)
 
     # Appended after EACH size and a finished size is skipped on a re-run: a
@@ -460,7 +498,8 @@ def main():
     if results_path.exists():
         results = json.loads(results_path.read_text(encoding="utf-8"))
     prov = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
-            "rounds": cfg0.augmentation.rounds, **tool_versions()}
+            "rir_p": args.rir, "rounds": cfg0.augmentation.rounds,
+            **tool_versions()}
     for name in names:
         key = f"{name}@{args.tag}" if args.tag else name
         if key in results and "error" not in results[key]:
