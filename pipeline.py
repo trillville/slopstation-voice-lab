@@ -38,6 +38,7 @@ import time
 import traceback
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from livekit.wakeword.config import WakeWordConfig
@@ -113,6 +114,104 @@ def patch_rir(p):
         return original(self, audio, p_override)
 
     _aug.AudioAugmentor.apply_rir = with_p
+
+
+def patch_seed(seed):
+    """Pin every RNG the training run touches.
+
+    livekit exposes no seed - not in config.py, not in trainer.py - so every
+    run so far has been a random draw. That is not a detail: two models trained
+    on BYTE-IDENTICAL features with the same recipe and different seeds scored
+    clean 64% vs 86%, noise ceiling 0.678 vs 0.220, and +10 dB recall 14% vs
+    37% (medium@snr-neg10 vs ab_mixupON_s1234, 2026-08-17). Seed variance is
+    larger than every effect this project has chased, so every single-run
+    comparison in the results file is unresolved until it is re-run across
+    seeds. Sweep >=3 per arm and compare distributions, never point estimates."""
+    import random as _random
+
+    import numpy as _np
+    import torch
+    _random.seed(seed)
+    _np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
+    """Build the 2 s window FROM BACKGROUND, then write the clip into it.
+
+    THE DEFECT THIS FIXES. Upstream mixes background into the ~0.9 s clip and
+    only then drops it into a buffer of np.zeros (align_clip_to_end for
+    positives, centre-pad for negatives). Measured on the shipped data:
+    positives carry 912 ms of leading DIGITAL SILENCE (51.8% exact zeros),
+    adversarial negatives 412 ms / 41%, background negatives 0 ms / 0%, and
+    ACAV100M - 87% of every batch - is precomputed continuous features. So
+    "quiet lead-in, then energy at the end of the window" is very nearly a free
+    discriminant for POSITIVE, and openWakeWord's 80 ms-hop stream never
+    provides it: the buffer always holds real room audio.
+
+    Causally confirmed on the deployed model, phrase audio byte-identical and
+    only the lead-in zeroed: +20 dB 74%->90%, +10 dB 38%->82%, 0 dB 2%->42%.
+    (Zeroing also raises false accepts ~5.8x, so FA-matched the artifact is
+    worth ~40-60 points rather than the raw delta - still the largest single
+    term found.)
+
+    It explains why four generations barely moved: every one changed what the
+    noise SOUNDED like, none changed the geometry of the window it occupied.
+
+    Two details that make or break the fix:
+      * SNR is referenced to the CLIP's power, not the padded window's.
+        Upstream's np.mean(audio**2) over a half-zero window understates speech
+        power and mixes noise ~3 dB hot; measuring on the clip keeps the
+        requested SNR honest.
+      * Negatives get the same treatment. Fixing only positives would invert
+        the shortcut into "zeros mean NEGATIVE", which is the same bug wearing
+        a different sign."""
+    import soundfile as sf
+    from livekit.wakeword.data import augment as _aug
+
+    def bg_window(self, n):
+        bg, _ = sf.read(str(random.choice(self.background_files)))
+        if bg.ndim > 1:
+            bg = bg[:, 0]
+        bg = bg.astype(np.float32)
+        if len(bg) < n:
+            bg = np.tile(bg, (n // len(bg)) + 1)
+        s = random.randint(0, max(0, len(bg) - n))
+        return bg[s:s + n]
+
+    def padded_mix(self, audio, snr_db_range=(lo, hi)):
+        if not self.background_files:
+            return audio
+        # End-aligned with the same 0-200 ms jitter upstream used, so the
+        # phrase still lands at varying offsets - only the FILL changes.
+        win = np.zeros(target_len, dtype=np.float32)
+        end = target_len - random.randint(0, jitter)
+        start = max(0, end - len(audio))
+        win[start:end] = audio[max(0, len(audio) - (end - start)):][:end - start]
+        if clean_p and random.random() < clean_p:
+            return win                      # the clean quarter, still padded
+        bg = bg_window(self, target_len)
+        snr_db = random.uniform(*snr_db_range)
+        clip_power = float(np.mean(audio ** 2)) + 1e-8      # NOT the window
+        bg_power = float(np.mean(bg ** 2)) + 1e-8
+        scale = np.sqrt(clip_power / (bg_power * 10 ** (snr_db / 10)))
+        return (win + scale * bg).astype(np.float32)
+
+    # Everything downstream already has the right length, so the zero-padding
+    # steps must become no-ops or they would re-introduce silence at the tail
+    # (align_clip_to_end crops by the jitter and zero-fills the remainder).
+    original_align = _aug.align_clip_to_end
+
+    def align_noop(audio, target_length, **kw):
+        return audio if len(audio) == target_length else original_align(
+            audio, target_length, **kw)
+
+    _aug.AudioAugmentor.mix_with_background = padded_mix
+    _aug.align_clip_to_end = align_noop
+    print(f"[patch] pad-then-mix: {target_len / 16000:.1f}s window built from "
+          f"background, clip written into it (no zero pad)", flush=True)
 
 
 def patch_augmentation(lo, hi, clean_p):
@@ -324,7 +423,7 @@ def run_data_stages(cfg, first):
         run_extraction(cfg)
 
 
-def run_variant(name, over, root, results, artifacts, key, tag, prov):
+def run_variant(name, over, root, results, artifacts, key, tag, prov, seed):
     # A name with no entry in `variants` is taken as a bare model_size, so
     # `Train.bat large` still works without the yaml having to list it.
     cfg = (load_config(root, over=over) if over is not None
@@ -492,6 +591,15 @@ def main():
                          "A/B): without it the second run's artifacts "
                          "overwrite the first's and its finished rows are "
                          "skipped as already done")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="training RNG seed. Seed variance is LARGER than "
+                         "every effect measured here (64%% vs 86%% clean on "
+                         "identical data), so sweep >=3 per arm.")
+    ap.add_argument("--pad-then-mix", action="store_true",
+                    help="build the training window from background instead of "
+                         "zeros - removes the silence shortcut (see "
+                         "patch_pad_then_mix). Changes the DATA: needs "
+                         "--from augment.")
     ap.add_argument("--no-bench", action="store_true",
                     help="skip the real-audio bench that normally closes a run")
     ap.add_argument("--list", action="store_true", help="show state and exit")
@@ -540,7 +648,8 @@ def main():
     # whatever augment last wrote, which on 2026-08-16 was a -10..+15 dataset
     # from an earlier experiment, while the results file said [0, 20].
     asked = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
-             "rir_p": args.rir, "rounds": cfg0.augmentation.rounds}
+             "rir_p": args.rir, "rounds": cfg0.augmentation.rounds,
+             "pad_then_mix": bool(args.pad_then_mix)}
     rebuilding = STAGES.index(args.first) <= STAGES.index("augment")
     on_disk = read_data_stamp(cfg0)
     prov = dict(asked) if rebuilding else {**(on_disk or asked),
@@ -567,7 +676,11 @@ def main():
         return 0
 
     check_not_compounding(args.snr[0], cfg0.augmentation.rounds)
-    patch_augmentation(args.snr[0], args.snr[1], args.clean)
+    if args.pad_then_mix:
+        patch_pad_then_mix(args.snr[0], args.snr[1], args.clean,
+                           int(cfg0.augmentation.clip_duration * 16000))
+    else:
+        patch_augmentation(args.snr[0], args.snr[1], args.clean)
     n_rir = sum(len(list(Path(d).glob("**/*.wav")))
                 for d in cfg0.augmentation.rir_paths)
     if not n_rir:
@@ -589,13 +702,18 @@ def main():
         # The data stages ran, so the arguments ARE the truth now.
         write_data_stamp(cfg0, asked)
     for name in names:
-        key = f"{name}@{args.tag}" if args.tag else name
+        # The seed is ALWAYS part of the identity. Two rows differing only by
+        # seed are two samples of the same arm, not two arms - and with seed
+        # variance this large, a key that hides it invites exactly the
+        # single-run conclusions that have had to be retracted twice.
+        suffix = f"{args.tag}-" if args.tag else ""
+        key = f"{name}@{suffix}s{args.seed}"
         if key in results and "error" not in results[key]:
             print(f"=== {key}: already in {results_path.name}, skipping ===")
             continue
         try:
             run_variant(name, specs.get(name), root, results, artifacts,
-                        key, args.tag, prov)
+                        key, args.tag, prov, args.seed)
         except Exception:
             # A failed variant is recorded and the sweep continues - an
             # unattended run should come back with results and one error, not
