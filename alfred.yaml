@@ -113,9 +113,11 @@ variants:
   medium-200k:  {model: {model_size: medium}, steps: 200000}
   medium-400k:  {model: {model_size: medium}, steps: 400000}
   # large loses to medium in every generation on every axis - do not re-add it.
-  # The stock hey_jarvis that outperformed all of this uses a DNN head, not
-  # conv_attention. Uncomment to find out whether the head is the difference.
-  # dnn-medium: {model: {model_type: dnn, model_size: medium}}
+  # The stock hey_jarvis the user reports as more robust in noise uses a DNN
+  # head; every model here is conv_attention. Shares the same data, so this is
+  # the architecture hypothesis tested for the price of one training run - and
+  # the last untested explanation for the jarvis gap that is not signal-side.
+  dnn-medium:   {model: {model_type: dnn, model_size: medium}}
 
 # The ceiling find_best_threshold optimises recall against. Only means anything
 # once make_validation.py has replaced the validation set with real room audio;
