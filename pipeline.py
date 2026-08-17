@@ -32,6 +32,7 @@ import argparse
 import json
 import random
 import shutil
+import subprocess
 import sys
 import time
 import traceback
@@ -241,7 +242,6 @@ def tool_versions():
     monkeypatch makes results a function of THIS code, not just the config -
     a row that cannot say which pipeline produced it is unreproducible."""
     import importlib.metadata as im
-    import subprocess
     out = {}
     for pkg in ("livekit-wakeword", "openwakeword", "torch"):
         try:
@@ -462,6 +462,8 @@ def main():
                          "A/B): without it the second run's artifacts "
                          "overwrite the first's and its finished rows are "
                          "skipped as already done")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="skip the real-audio bench that normally closes a run")
     ap.add_argument("--list", action="store_true", help="show state and exit")
     args = ap.parse_args()
     if args.tag and not all(c.isalnum() or c in "._-" for c in args.tag):
@@ -548,6 +550,28 @@ def main():
 
     table(results, root)
     print(f"results:   {results_path}")
+
+    # The real eval, run automatically, so the LAST thing on screen is the
+    # number that predicts the couch rather than the one that flatters it.
+    #
+    # livekit's eval cannot be repaired into a ranking. positive_train and
+    # positive_test come from ONE tts.synthesize_clips call with identical
+    # arguments - same phrases, same voice pool, no speaker holdout - and then
+    # through the same augmentation at the same SNR. It is an i.i.d. resample
+    # of the training distribution, so it measures "did training converge",
+    # which every candidate passes with a DET curve flat against the axes.
+    # Four generations were judged on it before anyone measured real audio.
+    if not args.no_bench:
+        print("\n" + "=" * 79)
+        print("REAL-AUDIO BENCH - your voice, your room, openWakeWord's runtime")
+        print("=" * 79, flush=True)
+        r = subprocess.run([sys.executable, str(HERE / "bench_real.py"),
+                            "--root", str(root), "--snr-sweep"])
+        if r.returncode:
+            # Missing positives or negatives is the usual cause and is not a
+            # training failure - the artifacts are on disk either way.
+            print("\n[bench] did not run. The models are still in "
+                  f"{artifacts}; fix the bench inputs and run Bench.bat.")
     return 0
 
 
