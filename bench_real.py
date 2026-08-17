@@ -281,8 +281,19 @@ def main():
                  f"(or pass --noise-only for a negatives-only comparison).")
     if not negatives:
         sys.exit(f"no negatives under {neg_dir}")
+    # Drop paths that are not there rather than dying on the first one.
+    # openWakeWord raises ValueError on a missing file, so an explicit
+    # --models list that names a model whose training run failed would take the
+    # whole bench down and lose every OTHER row with it - the worst possible
+    # outcome for an unattended sweep, where one crashed arm should cost one
+    # row and nothing else.
+    missing = [m for m in models if not Path(m).is_file()]
+    models = [m for m in models if Path(m).is_file()]
+    for m in missing:
+        print(f"[skip] not on disk: {Path(m).name}")
     if not models:
-        sys.exit(f"no .onnx under {root / 'artifacts'} or the repo models dir")
+        sys.exit(f"no .onnx found (checked {len(missing)} explicit path(s), "
+                 f"else {root / 'artifacts'} and the repo models dir)")
 
     print(f"positives  {len(positives)} utterances"
           + (" (--noise-only)" if args.noise_only else ""))
