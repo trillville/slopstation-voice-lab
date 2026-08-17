@@ -75,6 +75,7 @@ RATE = 16000
 # the same count for far less compute. 1.5 s covers oWW's score decay.
 REFRACTORY_HOPS = 19
 THRESHOLDS = np.round(np.arange(0.02, 1.00, 0.02), 2)
+DRAWS = 3                       # noise draws averaged per SNR cell
 
 
 def wilson(k, n, z=1.96):
@@ -122,6 +123,80 @@ def count_crossings(scores, threshold):
         else:
             i += 1
     return n
+
+
+def active_rms(x):
+    """RMS of the frames that carry the utterance, not of the whole clip.
+
+    Every positive clip is ~2 s of quiet lead-in plus the phrase plus a 2 s
+    tail, so whole-clip RMS is mostly silence and would overstate the SNR of
+    any mix by 10 dB or more - i.e. label a mix "0 dB" that is really +10."""
+    n = len(x) // 320
+    if not n:
+        return 0.0
+    frames = x[:n * 320].astype(np.float64).reshape(n, 320)
+    energy = np.sqrt((frames ** 2).mean(axis=1))
+    loud = energy > 0.2 * energy.max() if energy.max() > 0 else None
+    return float(energy[loud].mean()) if loud is not None and loud.any() \
+        else float(energy.mean())
+
+
+def mix_at_snr(speech, noise_pool, snr_db, rng):
+    """Speech plus a random slice of real room audio at a stated SNR.
+
+    Synthesised rather than recorded on purpose. Saying the phrase over a loud
+    game and slicing the result cannot work - slice_utterances segments by
+    energy, and speech at or below the background is exactly what it cannot
+    find - so recorded noisy positives would be silently biased toward the
+    takes that happened to be loud. Mixing puts the SNR on a dial instead, and
+    the noise is the same held-out room audio the negatives come from."""
+    pool = noise_pool
+    while len(pool) < len(speech):
+        pool = np.concatenate([pool, noise_pool])
+    start = int(rng.integers(0, len(pool) - len(speech) + 1))
+    seg = pool[start:start + len(speech)].astype(np.float64)
+
+    s_rms, n_rms = active_rms(speech), float(np.sqrt((seg ** 2).mean()))
+    if s_rms <= 0 or n_rms <= 0:
+        return speech
+    seg *= (s_rms / (10 ** (snr_db / 20))) / n_rms
+    out = speech.astype(np.float64) + seg
+    # Scale the WHOLE mix if it would clip - scaling both parts equally keeps
+    # the SNR exactly where it was asked to be.
+    peak = np.abs(out).max()
+    if peak > 32767:
+        out *= 32767 / peak
+    return out.astype(np.int16)
+
+
+def snr_sweep(model_path, positives, noise_pool, snrs, threshold, seed=0):
+    """Recall vs SNR at ONE fixed threshold - the deployed operating point.
+
+    This is the axis the rest of the bench was missing. Clean positives
+    measure a quiet room; negatives measure false accepts under noise; neither
+    measures the phrase being SAID under noise, which is the failure the couch
+    actually reports (20/20 quiet, falls apart with a game running)."""
+    from openwakeword.model import Model
+    m = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
+    out = {}
+    for snr in snrs:
+        # DRAWS repeats, because the noise is an hour of real room audio and
+        # wildly non-stationary: one 4 s slice can be near-silence and the next
+        # an explosion. Measured spread across seeds at a single draw was 6-8
+        # points; averaging draws pulls that down without needing more clips.
+        # Seeded per (model, snr) so every model meets identical mixes.
+        recalls, medians = [], []
+        for d in range(DRAWS):
+            rng = np.random.default_rng(seed + 1000 * d)
+            peaks = np.array([
+                trace(m, mix_at_snr(load_wav(p), noise_pool, snr, rng)).max()
+                for p in positives])
+            recalls.append(float((peaks >= threshold).mean()))
+            medians.append(float(np.median(peaks)))
+        out[snr] = {"recall": sum(recalls) / len(recalls),
+                    "recall_spread": round(max(recalls) - min(recalls), 3),
+                    "peak_median": round(sum(medians) / len(medians), 3)}
+    return out
 
 
 def bench(model_path, positives, negatives):
@@ -172,6 +247,10 @@ def main():
                     help="false accepts per hour the threshold must fit inside")
     ap.add_argument("--noise-only", action="store_true",
                     help="skip positives; rank by noise ceiling (cross-phrase)")
+    ap.add_argument("--snr-sweep", nargs="*", type=float, default=None,
+                    metavar="DB", help="also measure recall with the phrase "
+                    "MIXED INTO room audio at these SNRs (default: 20 15 10 "
+                    "5 0 -5). The couch condition the clean bench misses.")
     ap.add_argument("--json", type=Path, default=None)
     args = ap.parse_args()
 
@@ -286,6 +365,30 @@ def main():
         print(f"\nRate resolution: {hours:.2f} h of negatives means one event "
               f"= {1 / hours:.1f} FA/hr. A budget\nbelow that can only be met "
               f"by ZERO events at the chosen threshold.")
+
+    if args.snr_sweep is not None and positives:
+        snrs = args.snr_sweep or [20, 15, 10, 5, 0, -5]
+        pool = np.concatenate([load_wav(p) for p in negatives])
+        print(f"\n\n=== recall vs SNR: the phrase SAID OVER room audio ===")
+        print(f"each model at its OWN threshold from the table above; "
+              f"{len(positives)} utterances per cell\n")
+        print(f"{'model':34}{'thresh':>7}" +
+              "".join(f"{s:>+7.0f}dB" for s in snrs))
+        print("-" * (41 + 9 * len(snrs)))
+        for name, r in sorted(results.items(),
+                              key=lambda kv: -(kv[1]["recall"] or 0)):
+            if r["threshold"] is None:
+                continue
+            sw = snr_sweep(next(m for m in models
+                                if Path(m).stem == name),
+                           positives, pool, snrs, r["threshold"])
+            results[name]["snr_sweep"] = {str(k): v for k, v in sw.items()}
+            print(f"{name:34}{r['threshold']:>7.2f}" +
+                  "".join(f"{sw[s]['recall']:>8.0%}" for s in snrs))
+        print("\n+20 dB is a quiet room; 0 dB is the talker and the TV equally "
+              "loud at the mic;\nnegative is the TV winning. A model whose "
+              "column collapses between +10 and 0\nis the 'fine in a quiet "
+              "room, useless with a game on' complaint, measured.")
 
     # --noise-only writes ELSEWHERE by default. Its rows carry recall=None, so
     # sharing the filename silently destroyed a full bench and left a results
