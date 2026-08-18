@@ -62,8 +62,12 @@ CONFIG = HERE / "alfred.yaml"
 # version and different weights is the confusion that costs an evening, and
 # stale same-version rows in pipeline_results.json get skipped as already
 # done. v1.0 = the original sweep; v1.1 = SNR fix, no game audio; v1.2 = game
-# backgrounds + fresh held-out negatives (recorded 2026-08-16).
-VERSION = "v1.2"
+# backgrounds + fresh held-out negatives (recorded 2026-08-16); v1.3 = the
+# clean fraction stops being digital silence (patch_pad_then_mix's third
+# bullet), which is a DIFFERENT pad-then-mix recipe from the four v1.2 models
+# left on disk by 2026-08-17's aborted sweep - two recipes sharing one version
+# is exactly the confusion this constant exists to prevent.
+VERSION = "v1.3"
 
 STAGES = ["generate", "augment", "features", "train"]
 
@@ -160,16 +164,26 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
     It explains why four generations barely moved: every one changed what the
     noise SOUNDED like, none changed the geometry of the window it occupied.
 
-    Two details that make or break the fix:
+    Three details that make or break the fix:
       * SNR is referenced to the CLIP's power, not the padded window's.
         Upstream's np.mean(audio**2) over a half-zero window understates speech
         power and mixes noise ~3 dB hot; measuring on the clip keeps the
         requested SNR honest.
       * Negatives get the same treatment. Fixing only positives would invert
         the shortcut into "zeros mean NEGATIVE", which is the same bug wearing
-        a different sign."""
+        a different sign.
+      * The clean fraction is background pushed 35 dB DOWN, not removed.
+        Returning the bare padded window for clean_p of the clips reinstates
+        the shortcut on that fraction, and it is not a small residue: measured
+        on 2026-08-17's arm-B data, 20.7% of positives and 24.7% of adversarial
+        negatives still carried a ~0.9 s digital-silence lead-in against 0% of
+        background negatives - and ACAV100M, 87% of every batch, is continuous
+        features. So zeros still marked a window as TTS-derived. A quiet room
+        is room TONE, not zeros."""
     import soundfile as sf
     from livekit.wakeword.data import augment as _aug
+
+    CLEAN_SNR_DB = 35.0
 
     def bg_window(self, n):
         bg, _ = sf.read(str(random.choice(self.background_files)))
@@ -190,10 +204,11 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
         end = target_len - random.randint(0, jitter)
         start = max(0, end - len(audio))
         win[start:end] = audio[max(0, len(audio) - (end - start)):][:end - start]
-        if clean_p and random.random() < clean_p:
-            return win                      # the clean quarter, still padded
+        # The clean fraction is a HIGH SNR, not a bypass - see the docstring's
+        # third bullet. Returning `win` here is the shortcut, rebuilt.
+        snr_db = (CLEAN_SNR_DB if clean_p and random.random() < clean_p
+                  else random.uniform(*snr_db_range))
         bg = bg_window(self, target_len)
-        snr_db = random.uniform(*snr_db_range)
         clip_power = float(np.mean(audio ** 2)) + 1e-8      # NOT the window
         bg_power = float(np.mean(bg ** 2)) + 1e-8
         scale = np.sqrt(clip_power / (bg_power * 10 ** (snr_db / 10)))
@@ -211,7 +226,8 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
     _aug.AudioAugmentor.mix_with_background = padded_mix
     _aug.align_clip_to_end = align_noop
     print(f"[patch] pad-then-mix: {target_len / 16000:.1f}s window built from "
-          f"background, clip written into it (no zero pad)", flush=True)
+          f"background, clip written into it (no zero pad), "
+          f"{clean_p:.0%} at +{CLEAN_SNR_DB:g} dB instead of clean", flush=True)
 
 
 def patch_augmentation(lo, hi, clean_p):
@@ -423,19 +439,27 @@ def run_data_stages(cfg, first):
         run_extraction(cfg)
 
 
-def run_variant(name, over, root, results, artifacts, key, tag, prov, seed):
+def artifact_stem(model_name, name, tag, seed):
+    """What this run will call its model - and therefore the identity a re-run
+    has to check before believing a finished row.
+
+    The seed is IN THE FILENAME. It was not on 2026-08-17, and three seeds per
+    cell silently overwrote one another - nine hours of GPU left one model per
+    cell. patch_seed was defined but never called in the same botched edit, so
+    those runs were not even reproducible draws. Both failures came from a grep
+    that matched 2 of 3 patterns being read as success; verify each edit
+    separately, and compile the file.
+
+    One home because main() must predict this name before run_variant builds
+    it: the skip guard compares it against what is actually on disk."""
+    return f"{model_name}_{name}{f'_{tag}' if tag else ''}_s{seed}_{VERSION}"
+
+
+def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
     # A name with no entry in `variants` is taken as a bare model_size, so
     # `Train.bat large` still works without the yaml having to list it.
     cfg = (load_config(root, over=over) if over is not None
            else load_config(root, size=name))
-    # The seed is IN THE FILENAME. It was not on 2026-08-17, and three seeds
-    # per cell silently overwrote one another - nine hours of GPU left one
-    # model per cell. patch_seed was defined but never called in the same
-    # botched edit, so those runs were not even reproducible draws. Both
-    # failures came from a grep that matched 2 of 3 patterns being read as
-    # success; verify each edit separately, and compile the file.
-    suffix = f"_{tag}" if tag else ""
-    stem = f"{cfg.model_name}_{name}{suffix}_s{seed}_{VERSION}"
     print(f"\n=== {key}: {cfg.model.model_type}/{cfg.model.model_size}, "
           f"{cfg.steps} steps, seed {seed} ===", flush=True)
 
@@ -501,7 +525,7 @@ def run_variant(name, over, root, results, artifacts, key, tag, prov, seed):
           f"({minutes} min)", flush=True)
 
 
-def table(results, root):
+def table(results, root, target_fpph):
     print(f"\n{'':37}{'--- at fixed 0.5 ---':>26}{'--- tuned ---':>26}")
     print(f"{'variant':18}{'params':>9}{'onnx':>10}{'AUT':>9}{'FPPH':>8}"
           f"{'recall':>9}{'thresh':>9}{'recall':>9}{'FPPH':>8}{'train':>8}")
@@ -525,8 +549,35 @@ def table(results, root):
     # far EVERY candidate landed on the same tuned numbers with a DET curve
     # pinned flat against the axes, and each time the table was read as a
     # result instead of as a saturated test. Detect it and say it.
-    live = [r for k, r in results.items() if not k.startswith("_")
-            and "error" not in r and "eval_error" not in r]
+    scored = {k: r for k, r in results.items() if not k.startswith("_")
+              and "error" not in r and "eval_error" not in r}
+    live = list(scored.values())
+    # find_best_threshold falls back to MAX BALANCED ACCURACY when no threshold
+    # fits target_fp_per_hour, and says nothing about having done so - it just
+    # prints a threshold and a recall like any other row. 2026-08-17's
+    # pad-then-mix arm was the first family ever to miss the budget (16.3 and
+    # 13.4 FP/hr against a 0.2 target) and its "98.4% recall" sat in the table
+    # one line under a real 99.8%, inviting exactly the wrong read.
+    missed = [k for k, r in scored.items() if r["optimal_fpph"] > target_fpph]
+    if missed:
+        print(f"\n*** {', '.join(missed)}\n    NO threshold met the "
+              f"{target_fpph} FP/hr budget, so those tuned columns are "
+              f"livekit's\n    fallback (max balanced accuracy), not an "
+              f"operating point. Read them as\n    'did not fit', not as "
+              f"recall.")
+    # Rows are only comparable if they were graded on the same test set, and
+    # positive_features_test comes from the SAME augmentation as training. So a
+    # pad-then-mix row is scored on realistic windows while a row beside it is
+    # scored on windows that still carry the silence shortcut. Their recalls
+    # are two different measurements printed in one column.
+    if len({bool((r.get("data") or {}).get("pad_then_mix"))
+            for r in scored.values()}) > 1:
+        print("\n*** MIXED TEST SETS: pad-then-mix rows are graded on "
+              "realistic windows, the\n    others on windows carrying the "
+              "silence shortcut - positive_features_test is\n    built by "
+              "whichever augmentation trained the model. Recall is NOT "
+              "comparable\n    across that line. Bench.bat is; it scores every "
+              "model on the same real audio.")
     if len(live) >= 2 and (
             max(r["optimal_recall"] for r in live)
             - min(r["optimal_recall"] for r in live) < 0.005
@@ -649,11 +700,17 @@ def main():
         if rows:
             print("\nalready trained:")
             for k, dat in rows:
-                snr = dat.get("snr_db_range")
-                same = " <- SAME as this run" if snr == list(args.snr) else ""
+                snr, pad = dat.get("snr_db_range"), dat.get("pad_then_mix")
+                # "SAME" must mean the same DATA, not the same SNR. Every
+                # pad-then-mix row carries an identical snr to its control, so
+                # on 2026-08-17 this line marked the treatment arm SAME as a
+                # run asking for the opposite window geometry.
+                same = (" <- SAME as this run" if
+                        (snr, bool(pad)) == (list(args.snr),
+                                             bool(args.pad_then_mix)) else "")
                 print(f"  {k:22} snr={snr} clean={dat.get('clean_fraction')} "
-                      f"rir={dat.get('rir_p')} commit={dat.get('pipeline_commit')}"
-                      f"{same}")
+                      f"rir={dat.get('rir_p')} pad={bool(pad)} "
+                      f"commit={dat.get('pipeline_commit')}{same}")
     # What the models will ACTUALLY train on. Before the --list return, because
     # this is the line that would have saved two runs: --from train reuses
     # whatever augment last wrote, which on 2026-08-16 was a -10..+15 dataset
@@ -666,15 +723,25 @@ def main():
     prov = dict(asked) if rebuilding else {**(on_disk or asked),
                                            "data_stamp": bool(on_disk)}
     prov.update(tool_versions())
+    # EVERY data setting, not just the SNR. Comparing snr alone was the check
+    # until 2026-08-17, and it would have waved through the one that matters
+    # most in the experiment running that day: `--pad-then-mix --from train`
+    # over features built WITHOUT it prints "matches this run" and trains the
+    # treatment arm on the control arm's data. Keys absent from an older stamp
+    # are left alone rather than reported as mismatches.
+    differs = {k: (on_disk[k], v) for k, v in asked.items()
+               if on_disk and k in on_disk and on_disk[k] != v}
     if not rebuilding:
-        if on_disk and on_disk.get("snr_db_range") != list(args.snr):
-            print(f"\n*** STALE DATA: the features on disk were built with "
-                  f"snr={on_disk['snr_db_range']},\n    not the "
-                  f"snr={list(args.snr)} this run asks for. --from "
-                  f"{args.first} does NOT rebuild\n    them, so that is what "
-                  f"these models will train on. Results are stamped with\n"
-                  f"    the real value. Use --from augment to change it.\n",
-                  flush=True)
+        if differs:
+            print(f"\n*** STALE DATA: the features on disk were NOT built the "
+                  f"way this run asks.\n    --from {args.first} does not "
+                  f"rebuild them, so that is what these models\n    will train "
+                  f"on; the rows are stamped with the real values. Use\n"
+                  f"    --from augment to change it.", flush=True)
+            for k, (was, want) in differs.items():
+                print(f"      {k}: on disk {was!r}, this run asked {want!r}",
+                      flush=True)
+            print(flush=True)
         elif not on_disk:
             print(f"\n[warn] no data_settings.json beside the features: they "
                   f"predate this stamping,\n       so provenance falls back "
@@ -682,7 +749,8 @@ def main():
                   f"       rebuilds and records the truth.\n", flush=True)
         else:
             print(f"data       features built with snr="
-                  f"{on_disk['snr_db_range']} (matches this run)")
+                  f"{on_disk['snr_db_range']}, pad_then_mix="
+                  f"{on_disk.get('pad_then_mix')} (matches this run)")
     if args.list:
         return 0
 
@@ -719,12 +787,24 @@ def main():
         # single-run conclusions that have had to be retracted twice.
         suffix = f"{args.tag}-" if args.tag else ""
         key = f"{name}@{suffix}s{args.seed}"
-        if key in results and "error" not in results[key]:
-            print(f"=== {key}: already in {results_path.name}, skipping ===")
-            continue
+        stem = artifact_stem(cfg0.model_name, name, args.tag, args.seed)
+        # A row counts as done only if its MODEL is on disk under the name this
+        # run would write. The 2026-08-17 sweep left twelve finished-looking
+        # rows whose artifacts had all overwritten one another; re-running it
+        # would have skipped every one as already done and then benched the
+        # files that were never written - nine hours of no-op that reads
+        # exactly like success. Believe the artifact, not the row.
+        done = results.get(key)
+        if done and "error" not in done:
+            if done.get("onnx") == f"{stem}.onnx" and (
+                    artifacts / f"{stem}.onnx").is_file():
+                print(f"=== {key}: already in {results_path.name}, skipping ===")
+                continue
+            print(f"=== {key}: row exists but {stem}.onnx does not - "
+                  f"retraining ===")
         try:
             run_variant(name, specs.get(name), root, results, artifacts,
-                        key, args.tag, prov, args.seed)
+                        key, stem, prov, args.seed)
         except Exception:
             # A failed variant is recorded and the sweep continues - an
             # unattended run should come back with results and one error, not
@@ -735,7 +815,7 @@ def main():
         results["_run"] = provenance(load_config(root), args.snr, args.clean)
         results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
 
-    table(results, root)
+    table(results, root, cfg0.target_fp_per_hour)
     print(f"results:   {results_path}")
 
     # The real eval, run automatically, so the LAST thing on screen is the

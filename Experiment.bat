@@ -70,11 +70,21 @@ echo ============================================================
 REM The 12 new models plus the deployed incumbent, listed explicitly. The
 REM default glob would also re-score ~14 superseded artifacts at ~6 min each,
 REM adding well over an hour for rows already in bench_results.json.
+REM
+REM The four _v1.2 rows are the survivors of 2026-08-17's aborted sweep, kept
+REM because bench_real.py REWRITES bench_results.json rather than merging into
+REM it - anything not listed here vanishes from the file. They are free
+REM information besides: the two _s2 models are extra seeds of this run's
+REM control arm, and the two _pad models are pad-then-mix under the OLD clean
+REM quarter (digital silence), so the pair reads as "did fixing the clean
+REM quarter matter". Both are n=1; treat them as anecdotes next to the cells.
 call "%BENCH%" --snr-sweep --models ^
- "%A%\hey_alfred_medium_s0_v1.2.onnx" "%A%\hey_alfred_medium_s1_v1.2.onnx" "%A%\hey_alfred_medium_s2_v1.2.onnx" ^
- "%A%\hey_alfred_%LONG%_s0_v1.2.onnx" "%A%\hey_alfred_%LONG%_s1_v1.2.onnx" "%A%\hey_alfred_%LONG%_s2_v1.2.onnx" ^
- "%A%\hey_alfred_medium_pad_s0_v1.2.onnx" "%A%\hey_alfred_medium_pad_s1_v1.2.onnx" "%A%\hey_alfred_medium_pad_s2_v1.2.onnx" ^
- "%A%\hey_alfred_%LONG%_pad_s0_v1.2.onnx" "%A%\hey_alfred_%LONG%_pad_s1_v1.2.onnx" "%A%\hey_alfred_%LONG%_pad_s2_v1.2.onnx" ^
+ "%A%\hey_alfred_medium_s0_v1.3.onnx" "%A%\hey_alfred_medium_s1_v1.3.onnx" "%A%\hey_alfred_medium_s2_v1.3.onnx" ^
+ "%A%\hey_alfred_%LONG%_s0_v1.3.onnx" "%A%\hey_alfred_%LONG%_s1_v1.3.onnx" "%A%\hey_alfred_%LONG%_s2_v1.3.onnx" ^
+ "%A%\hey_alfred_medium_pad_s0_v1.3.onnx" "%A%\hey_alfred_medium_pad_s1_v1.3.onnx" "%A%\hey_alfred_medium_pad_s2_v1.3.onnx" ^
+ "%A%\hey_alfred_%LONG%_pad_s0_v1.3.onnx" "%A%\hey_alfred_%LONG%_pad_s1_v1.3.onnx" "%A%\hey_alfred_%LONG%_pad_s2_v1.3.onnx" ^
+ "%A%\hey_alfred_medium_s2_v1.2.onnx" "%A%\hey_alfred_medium-400k_s2_v1.2.onnx" ^
+ "%A%\hey_alfred_medium_pad_s1_v1.2.onnx" "%A%\hey_alfred_medium-400k_pad_s0_v1.2.onnx" ^
  "%V%\hey_alfred_v1.0.onnx"
 if errorlevel 1 (echo [FAIL] bench & set /a FAILS+=1)
 
