@@ -71,6 +71,13 @@ VERSION = "v1.3"
 
 STAGES = ["generate", "augment", "features", "train"]
 
+# Set once in main() from --continuations, read by load_config. Global because
+# it changes the CONFIG, not a variant: every load_config in a run has to agree
+# about what the positives are, and threading it through provenance() and
+# run_variant to say the same thing three times invites the two of them
+# disagreeing. The other patches in this file are global for the same reason.
+CONTINUATIONS = False
+
 # What a VARIANT may override. Everything here affects only training, so every
 # variant trains against byte-identical data and a comparison between them
 # means something.
@@ -272,6 +279,35 @@ def patch_augmentation(lo, hi, clean_p):
           f"(livekit default: +5..+15 dB, 0% clean)", flush=True)
 
 
+def patch_adversarial_from_bare(bare):
+    """Derive the adversarial negatives from the BARE phrases only.
+
+    THE TRAP THIS EXISTS FOR, measured before a single GPU-hour was spent on
+    it. livekit builds its adversarial negatives out of target_phrases by
+    substituting one word at a time for a near-rhyme. Feed it "hey alfred
+    play" and it happily emits "hey alfred clay", "hey alfred nintendo", "hey
+    alfred amigo" - 39,098 of 133,713 phrases, 29% of the negative corpus,
+    every one of them containing the COMPLETE wake phrase and labelled NOT A
+    WAKE WORD. Training on that teaches the exact opposite of the thing
+    continuation positives are meant to teach.
+
+    (The two-word list is nearly safe on its own: 48 of 17,124, things like
+    "hey al fredrich" and "hey alfredsson", which are genuinely different
+    words and make honest hard negatives. It is prefixes that are lethal.)
+
+    So the substitution generator only ever sees "hey alfred" / "hey al fred",
+    and the continuation forms exist as positives and nothing else."""
+    from livekit.wakeword.data import generate as _gen
+    original = _gen.generate_adversarial_phrases
+
+    def bare_only(target_phrases=None, **kw):
+        return original(target_phrases=list(bare), **kw)
+
+    _gen.generate_adversarial_phrases = bare_only
+    print(f"[patch] adversarial negatives derived from {list(bare)} only - "
+          f"continuation forms are positives and never negatives", flush=True)
+
+
 def merge(base, over):
     """Recursive dict overlay, so a variant can set model.model_size without
     also having to restate model_type."""
@@ -318,6 +354,16 @@ def load_config(root, size=None, over=None):
         aug[key] = [p if Path(p).is_absolute() else str((root / p).resolve())
                     for p in aug.get(key, [])]
     raw.pop("variants", None)               # ours, not livekit's schema
+    cont = raw.pop("continuation_phrases", None) or []
+    if CONTINUATIONS and cont:
+        # WEIGHTED BY REPETITION, because that is the only lever there is:
+        # piper's sampler is `itertools.cycle(phrases)`, so every entry gets an
+        # equal share of n_samples and a list of 2 bare + 12 continuation forms
+        # would leave the isolated delivery at 14% of the positives. Repeating
+        # the bare forms to match the continuation count puts the split at
+        # 50/50, which is roughly how the phrase actually gets said here.
+        bare = raw["target_phrases"]
+        raw["target_phrases"] = bare * max(1, round(len(cont) / len(bare))) + cont
     if over:
         raw = merge(raw, over)
     if size:
@@ -385,6 +431,12 @@ def keep(src, dest):
     return None
 
 
+def _short(v):
+    """One-line diffs, and target_phrases is 24 entries long once the
+    continuation forms are in."""
+    return f"{len(v)} phrases" if isinstance(v, list) and len(v) > 4 else repr(v)
+
+
 def data_stamp_path(cfg):
     return Path(cfg.model_output_dir) / "data_settings.json"
 
@@ -415,6 +467,54 @@ def read_data_stamp(cfg):
         return None
 
 
+TTS_SPLITS = ("positive_train", "positive_test", "negative_train", "negative_test")
+
+
+def clear_tts_splits(cfg):
+    """Delete the synthesised clips so run_generate actually regenerates them.
+
+    run_generate counts existing clip_######.wav files and SKIPS a split that
+    already has n_samples of them. That is the resume path, and it is also a
+    trap: change target_phrases, run --from generate, and it reports "split
+    already complete" and trains on the previous phrase list while every log
+    line and every provenance field says otherwise. Costs a full run to find."""
+    for split in TTS_SPLITS:
+        d = Path(cfg.model_output_dir) / split
+        n = len(list(d.glob("*.wav"))) if d.is_dir() else 0
+        if n:
+            shutil.rmtree(d)
+            print(f"    cleared {split} ({n} wavs)", flush=True)
+
+
+def check_positive_lengths(cfg, sample=2000):
+    """Warn if a positive is too long to survive end-alignment.
+
+    The window is clip_duration wide and the clip is written into it ending at
+    target_len minus 0-200 ms of jitter, cropping from the FRONT if it does not
+    fit. For a bare phrase that never happens. For "hey alfred switch to the
+    ps5" it happens every time, and what gets cropped is "hey alfred" - a
+    positive with no wake word in it, which is the worst label noise available.
+    Continuations have to stay short, and this is what proves they did."""
+    import soundfile as sf
+    budget = cfg.augmentation.clip_duration - 0.2
+    files = sorted((Path(cfg.model_output_dir) / "positive_train").glob("*.wav"))
+    if not files:
+        return
+    step = max(1, len(files) // sample)
+    durs = np.array([sf.info(str(p)).duration for p in files[::step]])
+    over = float((durs > budget).mean())
+    print(f"positives   {len(files)} clips, median {np.median(durs):.2f}s, "
+          f"p99 {np.percentile(durs, 99):.2f}s, {over:.1%} over the "
+          f"{budget:.1f}s budget", flush=True)
+    if over > 0.01:
+        print(f"\n*** {over:.1%} of positives are longer than {budget:.1f}s. "
+              f"Those get cropped from the FRONT\n    when they are written "
+              f"into the window, which removes the wake phrase and\n    leaves "
+              f"a positive that does not contain one. Shorten the "
+              f"continuation\n    forms in alfred.yaml before training on "
+              f"this.\n", flush=True)
+
+
 def run_data_stages(cfg, first):
     """generate/augment/features, skipping everything before `first`.
 
@@ -430,7 +530,19 @@ def run_data_stages(cfg, first):
     order = STAGES.index(first)
     if order <= STAGES.index("generate"):
         print("\n=== generate: TTS positives + adversarial negatives ===", flush=True)
+        # The clips on disk were made from SOME phrase list. If the stamp
+        # cannot prove it was this one, they get rebuilt - 40 minutes of TTS is
+        # cheap against a sweep trained on the wrong positives. A stamp written
+        # by this code and matching is the only thing that keeps the resume.
+        stamped = (read_data_stamp(cfg) or {}).get("target_phrases")
+        if stamped != list(cfg.target_phrases):
+            print(f"    phrase list changed (on disk: "
+                  f"{'unrecorded' if stamped is None else len(stamped)} "
+                  f"phrases, this run: {len(cfg.target_phrases)}) - "
+                  f"regenerating", flush=True)
+            clear_tts_splits(cfg)
         run_generate(cfg)
+        check_positive_lengths(cfg)
     if order <= STAGES.index("augment"):
         print("\n=== augment: RIR + background at the patched SNR ===", flush=True)
         run_augment(cfg)
@@ -662,12 +774,21 @@ def main():
                          "zeros - removes the silence shortcut (see "
                          "patch_pad_then_mix). Changes the DATA: needs "
                          "--from augment.")
+    ap.add_argument("--continuations", action="store_true",
+                    help="add alfred.yaml's continuation_phrases to the "
+                         "positives - the run-on delivery ('hey alfred play "
+                         "hades') the TTS corpus has never contained. Changes "
+                         "the DATA: needs --from generate.")
     ap.add_argument("--no-bench", action="store_true",
                     help="skip the real-audio bench that normally closes a run")
     ap.add_argument("--list", action="store_true", help="show state and exit")
     args = ap.parse_args()
     if args.tag and not all(c.isalnum() or c in "._-" for c in args.tag):
         sys.exit("--tag must be filename-safe: letters, digits, . _ -")
+
+    # Before the first load_config, because it changes what a config IS.
+    global CONTINUATIONS
+    CONTINUATIONS = args.continuations
 
     specs = variant_specs()
     names = args.variants or list(specs) or ["medium"]
@@ -717,7 +838,10 @@ def main():
     # from an earlier experiment, while the results file said [0, 20].
     asked = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
              "rir_p": args.rir, "rounds": cfg0.augmentation.rounds,
-             "pad_then_mix": bool(args.pad_then_mix)}
+             "pad_then_mix": bool(args.pad_then_mix),
+             # The phrases the CLIPS were made from, which is what makes
+             # run_data_stages able to tell a resume from a silent reuse.
+             "target_phrases": list(cfg0.target_phrases)}
     rebuilding = STAGES.index(args.first) <= STAGES.index("augment")
     on_disk = read_data_stamp(cfg0)
     prov = dict(asked) if rebuilding else {**(on_disk or asked),
@@ -739,8 +863,8 @@ def main():
                   f"on; the rows are stamped with the real values. Use\n"
                   f"    --from augment to change it.", flush=True)
             for k, (was, want) in differs.items():
-                print(f"      {k}: on disk {was!r}, this run asked {want!r}",
-                      flush=True)
+                print(f"      {k}: on disk {_short(was)}, this run asked "
+                      f"{_short(want)}", flush=True)
             print(flush=True)
         elif not on_disk:
             print(f"\n[warn] no data_settings.json beside the features: they "
@@ -748,13 +872,25 @@ def main():
                   f"to the arguments and may be wrong. --from augment\n"
                   f"       rebuilds and records the truth.\n", flush=True)
         else:
+            # The phrase count is printed, not just compared: a stamp written
+            # before target_phrases was recorded cannot be checked against, so
+            # showing what IS known beats a silent all-clear.
+            phrases = on_disk.get("target_phrases")
             print(f"data       features built with snr="
                   f"{on_disk['snr_db_range']}, pad_then_mix="
-                  f"{on_disk.get('pad_then_mix')} (matches this run)")
+                  f"{on_disk.get('pad_then_mix')}, "
+                  f"{len(phrases) if phrases else 'unrecorded'} phrases "
+                  f"(matches this run)")
     if args.list:
         return 0
 
     check_not_compounding(args.snr[0], cfg0.augmentation.rounds)
+    if args.continuations:
+        # The BARE list, read straight from the yaml - load_config has already
+        # appended the continuations to cfg0.target_phrases by now, and those
+        # are exactly what must never reach the substitution generator.
+        patch_adversarial_from_bare(
+            yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["target_phrases"])
     if args.pad_then_mix:
         patch_pad_then_mix(args.snr[0], args.snr[1], args.clean,
                            int(cfg0.augmentation.clip_duration * 16000))

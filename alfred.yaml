@@ -45,6 +45,45 @@ custom_negative_phrases:
   - "say alfred"
   - "it's alfred"
 
+# RUN-ON POSITIVES, added by pipeline.py's --continuations. Not part of
+# livekit's schema; load_config pops this key.
+#
+# WHAT THEY FIX. Every TTS positive ever generated here is the bare phrase
+# followed by nothing, but the score crests about a second AFTER the talker
+# stops - on the quiet /d/ decay - so a command said in one breath stomps the
+# very window the model needs. Measured on v1.0, user-confirmed true positives:
+# "hey alfred play hades" scores 0.011-0.041 where isolated utterances median
+# 0.678. That is a delivery style the live pre-roll path explicitly supports,
+# and it is off-distribution for every model this repo has trained.
+#
+# WHY SYNTHESISED WHOLE rather than stitching a continuation onto an existing
+# clip: the phenomenon IS the coarticulation. In a run-on there is no trailing
+# pause and the /d/ runs straight into the next word, which is exactly what a
+# concatenation cannot reproduce.
+#
+# WHY THEY ARE ALL SHORT. The clip is written into a 2 s window ending at
+# target_len minus 0-200 ms of jitter and cropped from the FRONT if it does not
+# fit - so a long continuation crops "hey alfred" off and leaves a positive
+# with no wake word in it. Keep every form under ~1.6 s; check_positive_lengths
+# measures it after generation and says so if this rule gets broken.
+#
+# The first words are the real command vocabulary from grammar.yaml, chosen for
+# varied onsets (plosive, fricative, nasal, vowel) so the model learns "the
+# phrase, then more speech" rather than "the phrase, then the word play".
+continuation_phrases:
+  - "hey alfred play"
+  - "hey alfred start"
+  - "hey alfred stop"
+  - "hey alfred pause"
+  - "hey alfred open"
+  - "hey alfred launch"
+  - "hey alfred switch to"
+  - "hey alfred go back"
+  - "hey alfred show"
+  - "hey alfred mute"
+  - "hey alfred volume"
+  - "hey alfred turn it up"
+
 n_samples: 25000
 n_samples_val: 2000
 n_background_samples: 2000
