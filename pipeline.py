@@ -428,10 +428,21 @@ def run_variant(name, over, root, results, artifacts, key, tag, prov, seed):
     # `Train.bat large` still works without the yaml having to list it.
     cfg = (load_config(root, over=over) if over is not None
            else load_config(root, size=name))
-    stem = f"{cfg.model_name}_{name}{f'_{tag}' if tag else ''}_{VERSION}"
+    # The seed is IN THE FILENAME. It was not on 2026-08-17, and three seeds
+    # per cell silently overwrote one another - nine hours of GPU left one
+    # model per cell. patch_seed was defined but never called in the same
+    # botched edit, so those runs were not even reproducible draws. Both
+    # failures came from a grep that matched 2 of 3 patterns being read as
+    # success; verify each edit separately, and compile the file.
+    suffix = f"_{tag}" if tag else ""
+    stem = f"{cfg.model_name}_{name}{suffix}_s{seed}_{VERSION}"
     print(f"\n=== {key}: {cfg.model.model_type}/{cfg.model.model_size}, "
-          f"{cfg.steps} steps ===", flush=True)
+          f"{cfg.steps} steps, seed {seed} ===", flush=True)
 
+    # Per VARIANT, not once per process: run_train advances the global RNG, so
+    # seeding only at startup would leave the second variant in a sweep drawing
+    # from a different state, and the arms would not be paired.
+    patch_seed(seed)
     t0 = time.time()
     pt_path = run_train(cfg)
     onnx_path = run_export(cfg)
