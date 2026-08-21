@@ -86,8 +86,12 @@ continuation_phrases:
 
 n_samples: 25000
 n_samples_val: 2000
-n_background_samples: 2000
-n_background_samples_val: 400
+# 2000 -> 4000 on 2026-08-21: the recording campaign grew the pool 2,274 ->
+# 6,324 files (sess5/6, room-dup, mined hard\), so a 2,000-draw's coverage of
+# it fell 88% -> 32%. Val scaled with it. Bgcount.bat is the gated A/B that
+# decides whether this stays.
+n_background_samples: 4000
+n_background_samples_val: 800
 
 data_dir: ./data
 output_dir: ./output
