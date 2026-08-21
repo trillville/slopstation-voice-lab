@@ -86,12 +86,14 @@ continuation_phrases:
 
 n_samples: 25000
 n_samples_val: 2000
-# 2000 -> 4000 on 2026-08-21: the recording campaign grew the pool 2,274 ->
-# 6,324 files (sess5/6, room-dup, mined hard\), so a 2,000-draw's coverage of
-# it fell 88% -> 32%. Val scaled with it. Bgcount.bat is the gated A/B that
-# decides whether this stays.
-n_background_samples: 4000
-n_background_samples_val: 800
+# 4000 was TRIED when the pool grew 2,274 -> 6,324 files (2026-08-21, the
+# Bgcount run: 4 seeds vs the 4 pad2 seeds over the same 6 honest heldout
+# hours). It LOST: FA 0.83-1.0/hr at the budget thresholds vs pad2's
+# 0.50-0.83, best noisy recall 47% at +10 dB vs pad2_s0's 55%, ceilings no
+# better. Coverage-per-build is not the binding constraint - do not re-raise
+# this without new evidence; the next levers are data variety and seeds.
+n_background_samples: 2000
+n_background_samples_val: 400
 
 data_dir: ./data
 output_dir: ./output
