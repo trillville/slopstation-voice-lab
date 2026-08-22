@@ -43,7 +43,7 @@ def load():
 def resolve(cfg, provider=None, model=None):
     """Follows the local, untracked config.json unless overridden."""
     provider = provider or cfg["voice"]["assistantProvider"]
-    return provider, (model or assistant.default_model(cfg, provider))
+    return provider, (model or assistant.default_model(cfg["voice"], provider))
 
 
 def run_convo(cfg, secrets, provider, model, utterances):
