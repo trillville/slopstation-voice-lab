@@ -5,8 +5,8 @@
     .venv\\Scripts\\python bench\\probe_stt.py --no-keyterms   (no boost at all)
     .venv\\Scripts\\python bench\\probe_stt.py --sweep         (fuzzyTitleThreshold)
 
-Live Deepgram, real money, non-deterministic - see harness.py. Windows SAPI
-speaks each utterance, so this measures the STT config, not tonight's room.
+Live Deepgram, real money, non-deterministic. Windows SAPI speaks each
+utterance, so this measures the STT config, not tonight's room.
 Exit code is the number of failing probes.
 
 2026-08-14: keyterms were Steam's own strings, so Flux was taught ARMORED CORE
@@ -27,8 +27,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-# Path setup inline: harness is the LLM probes' plumbing, and this probe
-# drives the STT socket instead.
+# Path setup inline: this probe drives the STT socket, not the assistant.
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))            # k15/voice
 sys.path.insert(0, str(HERE.parents[2] / "k15"))
