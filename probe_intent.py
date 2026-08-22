@@ -3,16 +3,11 @@
     .venv\\Scripts\\python bench\\probe_intent.py
     .venv\\Scripts\\python bench\\probe_intent.py --provider openai --trials 8
 
-Live model, real money, non-deterministic - see harness.py. dry_run=True
-throughout, so nothing reaches the gaming PC even when the model ends a
-session.
+Live model, real money, non-deterministic - see harness.py. dry_run=True, so
+nothing reaches the gaming PC. Exit code is the number of failing probes.
 
-WHY (2026-08-11, observed live): a question about how to leave a gaming
-session ended one, at 1/3 - a one-in-three action bug reads as "worked fine"
-in any hand test. "How do I get back to my office setup?" STARTED a session
-instead, 3/3. So both directions: a question must not act, an imperative must.
-
-Exit code is the number of failing probes, so this can gate a prompt change.
+2026-08-11 live: a question about leaving a gaming session ended one, at 1/3;
+"How do I get back to my office setup?" STARTED a session, 3/3.
 """
 import argparse
 import sys
@@ -20,9 +15,7 @@ import sys
 import harness
 
 # (utterance, must_act, why). must_act=False: reaching for anything in
-# DISRUPTIVE is the bug - answering is correct, and so is a mic-only tool like
-# stop_listening, which changes nothing in the room. True: refusing to act is
-# the opposite bug.
+# DISRUPTIVE is the bug; a mic-only tool like stop_listening is fine.
 PROBES = [
     ("What is the command or, like, what's the tool that you would run, um, "
      "to take me out of a gaming session and back to using it in my office?",
@@ -35,18 +28,15 @@ PROBES = [
     ("Go away, stop listening.", False,
      "the mic-only ask: stop_listening is the right tool, and ending the "
      "session over it would kill a game the user never mentioned"),
-    # quit_game ends a running game and can lose unsaved progress - the user's
-    # sharpest concern. It is confirm-first (assistant-lane, no grammar), so
-    # NEITHER a question about it NOR a bare imperative may fire it single-turn:
-    # a question is answered, an imperative is confirmed first ("Quit X?").
+    # quit_game can lose unsaved progress and is confirm-first: neither a
+    # question nor a bare imperative may fire it single-turn.
     ("What happens if I quit the game?", False,
      "a question about quitting must not call quit_game"),
     ("Close the game.", False,
      "confirm-first: quit is ASKED before it fires, never on the bare imperative"),
 ]
 
-# quit_game joins the game-ending set. install_game is here for completeness but
-# the bench builds impls with steam=None, so it is never offered (nor callable).
+# install_game is never offered: the bench builds impls with steam=None.
 DISRUPTIVE = ("end_session", "start_session", "switch_input",
               "quit_game", "install_game")
 

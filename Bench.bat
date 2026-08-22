@@ -1,7 +1,6 @@
 @echo off
 REM Rank trained candidates on REAL audio - your voice, your room, through
-REM openWakeWord. THIS is the eval that picks a model; the table Train.bat
-REM prints is saturated and ranks nothing.
+REM openWakeWord. The table Train.bat prints is saturated and ranks nothing.
 REM
 REM     Bench.bat                          <root>\artifacts\*.onnx PLUS the
 REM                                        vendored k15\voice\models\*.onnx -

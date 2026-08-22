@@ -4,65 +4,34 @@
     .venv\\Scripts\\python bench\\probe_host_api.py 600 --dump run1.json
     .venv\\Scripts\\python bench\\probe_host_api.py 60 --channels 6
 
-Runs on the K15. STOP THE VOICE SUPERVISOR FIRST - it holds the same mic, and
-the point is to measure the endpoint rather than race the agent for it.
+Runs on the K15. STOP THE VOICE SUPERVISOR FIRST - it holds the same mic.
 
-WHY this exists: audio.resolve_device matches on NAME only and takes the first
-hit, and MME sorts first - so the wake listener has always bound the array
-through MME (index 1). couch.log carries 69 wake_stream_died on 2026-08-14 and
-30 on 2026-08-15, and across every one of them the DEVICE STAYS ENUMERATED: the
-rebuild rebinds the same name within 5 s and open_audio never once logs
-audio_device_wait. That makes it a stream failure on a device that is present,
-not a USB disconnect, which puts the host API in the frame - and this is the
-cheapest way to indict or clear it.
+audio.resolve_device matches on NAME only and takes the first hit, and MME
+sorts first, so the wake listener always binds the array through MME (index 1).
+couch.log: 69 wake_stream_died on 2026-08-14, 30 on 2026-08-15, device
+enumerated throughout and no audio_device_wait - a stream failure on a present
+device, not a USB disconnect.
 
-Both outcomes are useful, which is why it is worth the wall clock:
-  - flaps reproduce with the agent down => environmental or host-API, and the
-    per-candidate counts say which;
-  - flaps do NOT reproduce => the agent's own stream churn is implicated and
-    MME is exonerated. Do not read that as "fixed".
+Candidates soak CONCURRENTLY (deaths cluster: ten in three minutes on
+2026-08-15) on one PyAudio instance, never terminated mid-run - a terminate
+would take the other candidate's stream with it, at the cost of a possible
+stale-index reopen. A death is a read that RAISES or a stream returning all
+zeros (the array idles ~1.3 RMS). No events emitted; deaths print timestamped
+to line up against couch.log.
 
-WHY concurrent rather than one candidate and then the other: the deaths cluster
-(ten inside three minutes on 2026-08-15). Run sequentially and whichever
-candidate happens to draw the burst loses - the result would be a time-of-day
-artifact wearing a host-API label. Both streams stay open across the same
-seconds or the comparison means nothing.
-
-WHY 6 ch by default, when the agent runs mono today. Measured on the array
-2026-08-15, PortAudio accepts:
+Widths PortAudio accepted on the array, measured 2026-08-15:
 
     MME              1 / 2 / 4 / 6 ch      DirectSound   1 / 2 / 4 / 6 ch
     WASAPI           6 ch ONLY (-9998)     WDM-KS        nothing (-9999)
 
-WASAPI shared mode demands the engine's exact format, and the endpoint's
-shared-mode format IS the device native one (6 ch / 16 kHz / 16-bit, discrete
-mask). So mono is not a setting WASAPI can be soaked at, and mono-vs-6ch would
-confound host API with channel count. 6 ch is the ONLY value every candidate
-accepts, which makes it the one place host API is the sole variable - and it is
-also the only shape a WASAPI production binding could ever take, so the fair
-comparison and the real candidate happen to coincide.
+WASAPI shared mode demands the device native format (6 ch / 16 kHz / 16-bit,
+discrete mask), so 6 ch is the only width every candidate accepts and the
+default - the one setting where host API is the sole variable, since
+mono-vs-6ch would confound it with channel count. --channels 1 drops WASAPI.
+WDM-KS is exclusive-mode and will not open while the engine holds the endpoint.
 
---channels 1 is still worth a run: it drops WASAPI and asks the narrower
-question of whether channel count alone moves MME. WDM-KS is excluded outright;
-it is exclusive-mode and will not open at any width while the audio engine
-holds the endpoint, so it has no production form to compare.
-
-WHY one PyAudio instance, never terminated mid-run: audio.rebuild_audio tears
-the whole world down on recovery for reasons its docstring records, and this
-deliberately does not - a terminate would take the other candidate's stream
-with it and destroy the pairing. A probe counts deaths; it does not test
-recovery. The cost is that a stale-index reopen is possible here, and it lands
-on both candidates equally.
-
-TWO failure modes are counted, because the incident history has both: a read
-that RAISES, and a stream that keeps returning bytes that are all zero -
-rebuild_audio's "'succeeds' onto a dead endpoint and goes deaf". A real mic has
-a noise floor (this array idles around 1.3 RMS), so exact digital silence for
-ZOMBIE_CHUNKS is not a quiet room, it is a corpse.
-
-No events are emitted. A bench tool has no business writing prod telemetry
-(record_room.py's rule) and a multi-hour soak would flood it; deaths print with
-a timestamp instead, so they can be lined up against couch.log by eye.
+If flaps do NOT reproduce here, the agent's own stream churn is implicated,
+not the host API.
 """
 import argparse
 import json
@@ -84,13 +53,10 @@ CHUNK = 1280                                # audio.py's native 80 ms hop
 REOPEN_S = audio.RETRY_S                    # settle exactly as the agent does
 CHUNKS_PER_S = RATE / CHUNK                 # 12.5: what a real-time stream owes
 ZOMBIE_CHUNKS = 125                         # ~10 s of exact silence
-WARMUP_CHUNKS = 5                           # probe_wake_model's rule: a stream
-#                                             may hand back zeros while its
-#                                             buffer primes, and counting those
-#                                             would call every open a corpse.
-PACE_SAMPLE = 50                            # ~4 s of audio before timing is
-#                                             judged - long enough that a burst
-#                                             off a warm buffer cannot convict.
+WARMUP_CHUNKS = 5                           # a stream may hand back zeros
+#                                             while its buffer primes
+PACE_SAMPLE = 50                            # ~4 s before timing is judged, so
+#                                             a warm-buffer burst can't convict
 PROGRESS_S = 300
 # WDM-KS is deliberately absent - see the header's format matrix.
 CANDIDATES = ("MME", "Windows DirectSound", "Windows WASAPI")
@@ -99,9 +65,7 @@ CANDIDATES = ("MME", "Windows DirectSound", "Windows WASAPI")
 def resolve_on_api(pa, fragment, api_name):
     """audio.resolve_device's name-fragment rule, narrowed to ONE host API.
 
-    Its own copy on purpose. resolve_device cannot select a host API - that is
-    the production change this probe exists to justify - and a probe that
-    presupposed the fix could not be evidence for it."""
+    Its own copy: resolve_device cannot select a host API."""
     api_idx = next((i for i in range(pa.get_host_api_count())
                     if pa.get_host_api_info_by_index(i)["name"] == api_name),
                    None)
@@ -140,22 +104,17 @@ class Candidate:
         self.opened_at, self.since_open = time.monotonic(), 0
 
     def free_running(self):
-        """Delivering faster than real time = not capturing, just handing back
-        buffers on demand. Measured since the last OPEN, not since the run
-        started, so time spent deaf between reopens cannot drag the rate down
-        and hide a free-runner. The 2x margin and PACE_SAMPLE together are what
-        keep a merely fast machine from being convicted on timing."""
+        """Delivering faster than real time = not capturing. Measured since
+        the last OPEN so deaf time between reopens cannot hide a free-runner;
+        the 2x margin plus PACE_SAMPLE keep a fast machine from convicting."""
         span = time.monotonic() - (self.opened_at or time.monotonic())
         return self.since_open / max(span, 1e-9) > 2 * CHUNKS_PER_S
 
     def summary(self, elapsed):
         heard = max(elapsed - self.deaf_s, 1e-9)
-        # A 16 kHz stream on an 80 ms hop owes 12.5 chunks/s and blocks to pace
-        # itself. A rate far above that is a stream that is not capturing at
-        # all, just handing back buffers as fast as it is asked - the same
-        # "'succeeds' onto a dead endpoint" corpse rebuild_audio describes,
-        # caught by its timing rather than by its contents. DirectSound at 6 ch
-        # free-ran at ~125 chunks/s on 2026-08-15; MME and WASAPI paced.
+        # A 16 kHz stream on an 80 ms hop owes 12.5 chunks/s and blocks to
+        # pace itself. DirectSound at 6 ch free-ran at ~125 chunks/s on
+        # 2026-08-15; MME and WASAPI paced.
         return {
             "host_api": self.api, "index": self.index, "device": self.name,
             "chunks": self.chunks,
@@ -177,8 +136,7 @@ def stamp():
 
 def soak(cand, pa, channels, stop):
     """Read until stop, reopening on death the way the agent would. Never
-    raises: a probe thread that dies takes its own measurement with it, and
-    the surviving candidate would look artificially good."""
+    raises - a dead thread makes the surviving candidate look good."""
     while not stop.is_set():
         if cand.stream is None:
             t0 = time.monotonic()
@@ -206,14 +164,10 @@ def soak(cand, pa, channels, stop):
             continue
         cand.chunks += 1
         cand.since_open += 1
-        # TIMING FIRST - it is the reliable tell, and content is not. Soaking
-        # DirectSound at 6 ch on 2026-08-15 returned exact zeros on one run and
-        # non-zero garbage on the next, so a content test alone cleared it the
-        # second time; both runs delivered ~3 million chunks/s against the 12.5
-        # a real-time stream owes. Retire rather than reopen: a free-runner
-        # mints a fresh event every second of wall clock and would bury the
-        # real candidates under thousands of its own over a 2 h soak. The
-        # finding is made; repeating it is not more evidence.
+        # Timing first: content is not reliable. DirectSound at 6 ch on
+        # 2026-08-15 returned exact zeros on one run and garbage on the next,
+        # but both delivered ~3 million chunks/s against 12.5 owed. Retire
+        # rather than reopen - a free-runner mints an event a second.
         if cand.since_open > PACE_SAMPLE and cand.free_running():
             cand.retired = ("free-running - never paced to real time, so it "
                             "was never capturing")
@@ -224,10 +178,8 @@ def soak(cand, pa, channels, stop):
             return
         if cand.since_open <= WARMUP_CHUNKS:
             continue
-        # A stream that DOES pace and still returns nothing but zeros is the
-        # other corpse - rebuild_audio's "'succeeds' onto a dead endpoint".
-        # any() short-circuits on the first non-zero byte, so this costs
-        # nothing on a live mic and only walks the buffer on a dead one.
+        # A stream that DOES pace and still returns only zeros is the other
+        # dead endpoint. any() short-circuits on the first non-zero byte.
         cand.silent = 0 if any(data) else cand.silent + 1
         if cand.silent < ZOMBIE_CHUNKS:
             continue
@@ -269,9 +221,8 @@ def main():
         try:
             c.open(pa, args.channels)
         except Exception as e:
-            # An ANSWER, not a fault: at --channels 1 this is WASAPI declining
-            # anything but the engine format, which is the documented shape of
-            # the thing and not a problem with the run.
+            # Not a fault: at --channels 1 this is WASAPI declining anything
+            # but the engine format.
             print(f"  {api}: index {idx} would not open at "
                   f"{args.channels} ch - {e}")
             continue
@@ -294,18 +245,14 @@ def main():
     try:
         next_tick = PROGRESS_S
         while True:
-            # Bounded by what is LEFT, not by PROGRESS_S: waiting the full
-            # interval and only then re-checking overshoots every run shorter
-            # than the interval, which is every smoke test.
+            # Bounded by what is LEFT, not PROGRESS_S: waiting the full
+            # interval overshoots every run shorter than it.
             left = args.seconds - (time.monotonic() - t0)
             if left <= 0:
                 break
-            # POLL, never one long wait. On Windows a blocking Event.wait()
-            # defers SIGINT for its whole duration, so a 5-minute wait made
-            # Ctrl-C look broken - pressed, nothing, pressed again, still a
-            # live process minutes later. The operator's escape hatch has to
-            # answer in about a second or it is not an escape hatch. Costs one
-            # wakeup a second across a 2 h soak, which is free.
+            # Poll, never one long wait: on Windows a blocking Event.wait()
+            # defers SIGINT for its whole duration, so Ctrl-C would take up to
+            # 5 minutes to land.
             stop.wait(min(1.0, left))
             if stop.is_set():
                 break
@@ -324,10 +271,7 @@ def main():
         t.join(timeout=REOPEN_S + 2)
     elapsed = time.monotonic() - t0
     for c in cands:
-        # Guarded here rather than teaching close_stream_quietly to accept
-        # None: a retired candidate has already closed its own stream, and
-        # loosening a production helper for a bench caller's convenience is
-        # how the resolver picked up its required= flag.
+        # A retired candidate has already closed its own stream.
         if c.stream is not None:
             audio.close_stream_quietly(c.stream)
     pa.terminate()
@@ -355,9 +299,8 @@ def main():
         print(f"\nOnly {len(live)} candidate(s) survived the run - there is no "
               f"comparison left to draw, whatever the counts above say.")
     elif not total:
-        # The logged rate is ~2/h. Silence over a short run is the expected
-        # outcome even when MME is guilty, and reading it as a clean bill of
-        # health is how this probe would produce a wrong answer.
+        # The logged rate is ~2/h, so silence over a short run is expected
+        # even when MME is guilty.
         print(f"\nNo events in {hours:.1f}h. At the ~2/h logged on 2026-08-15 "
               f"that is unsurprising below ~2h and settles nothing - run it "
               f"longer, or run it while the agent is up to test the other "

@@ -4,25 +4,12 @@
     Validate.bat --restore            put livekit's stock set back
 
 Writes data/features/validation_set_features.npy, which trainer.py's
-_load_validation_data() concatenates into the validation negatives - so both
-the reported FPPH and find_best_threshold's tuned threshold end up measured
-against whatever is in here.
+_load_validation_data() concatenates into the validation negatives, so both the
+reported FPPH and find_best_threshold's tuned threshold are measured against
+it. Feed it audio the model has NEVER trained on.
 
-WHY this exists: on 2026-08-15 every hour of room audio was TRAINING data and
-none of it was validation data, so the eval had nothing from the deployment
-environment to score against. The result was a sweep in which small, medium and
-large were indistinguishable - all three scored exactly 3 false positives in
-17.85 h, ~99.3% recall, AUT 0.0000 - while on real couch audio their medians
-were 0.083, 0.892 and 0.585. The eval could not rank the candidates because it
-was not looking at the room.
-
-Feed it audio the model has NEVER trained on. Reusing a slice of the training
-backgrounds here would report a beautiful FPPH and mean nothing, which is the
-same mistake in a new place.
-
-Non-overlapping windows on purpose: validation_hours is computed as
-rows * clip_duration / 3600, so overlapping them would inflate the denominator
-and quietly understate FPPH.
+Non-overlapping windows: validation_hours is rows * clip_duration / 3600, so
+overlap would inflate the denominator and understate FPPH.
 """
 import argparse
 import shutil
@@ -46,8 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "alfred.yaml"
 RATE = 16000
-# The stock set survives under this name so --restore is always possible and
-# so nobody has to re-download 176 MB to undo an experiment.
+# The stock set survives under this name so --restore never needs the 176 MB
+# re-download.
 STOCK_BACKUP = "validation_set_features.livekit-stock.npy"
 
 
@@ -122,16 +109,10 @@ def main():
         shutil.copy2(target, backup)
         print(f"stock set backed up -> {backup.name}")
 
-    # APPEND by default, and always rebase from the BACKUP rather than from
-    # whatever is at `target` - re-running otherwise stacks the room audio onto
-    # a file that already contains it, and the set silently grows every time.
-    #
-    # Appending rather than replacing is the right call whenever the room audio
-    # is small next to the stock set's 16.7 h. Replacing 16.7 h of general
-    # negatives with 15 minutes buys a purer living-room FPPH and throws away
-    # the axis that catches a model firing on ordinary speech - and a
-    # sub-hour set is too noisy to carry a threshold on its own anyway.
-    # --replace is there for the day there are hours of room audio.
+    # APPEND by default, rebasing from the BACKUP not from `target` - otherwise
+    # a re-run stacks the room audio onto a file that already has it. Replacing
+    # the stock set's 16.7 h with minutes of room audio throws away the axis
+    # that catches a model firing on ordinary speech.
     stock = np.zeros((0, 16, 96), dtype=np.float32)
     if backup.exists() and not args.replace:
         stock = np.load(str(backup))
@@ -148,10 +129,9 @@ def main():
     print(f"  your room        {room_h:6.2f} h")
     print(f"  total            {total_h:6.2f} h")
 
-    # The number that decides whether this was worth doing. find_best_threshold
-    # maximises recall subject to fpph <= target_fp_per_hour, so the whole set
-    # gets a budget of (target x hours) false positives - and every FP the room
-    # block produces eats into the same budget the stock set is already using.
+    # find_best_threshold maximises recall subject to fpph <=
+    # target_fp_per_hour, so the whole set gets a budget of (target x hours)
+    # false positives, shared between the stock and room blocks.
     budget = cfg.target_fp_per_hour * total_h
     print(f"\nAt target_fp_per_hour {cfg.target_fp_per_hour}, the tuned "
           f"threshold gets a budget of\n{budget:.1f} false positives across "

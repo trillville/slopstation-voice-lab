@@ -5,17 +5,11 @@ breath, and reserve the background worker for judgment?
     .venv\\Scripts\\python bench\\probe_tool_select.py --provider openai --trials 8
 
 Live model, real money, non-deterministic - see harness.py; dry_run=True, so
-nothing reaches the gaming PC.
+nothing reaches the gaming PC. Exit code is the number of failing probes.
 
-WHY: the data lane (search_store / list_games / get_game_details facets) only
-pays off if the model REACHES for it instead of either answering from memory or
-queueing a background task for a fact one call settles. The two failure modes
-this guards: a filterable "find me a ..." over-escalating to background_task,
-and a feed question ("anything on sale?") that no tool touched. It also guards
-the other direction - a genuine multi-source judgment SHOULD still escalate.
-
-Exit code is the number of failing probes, so it can gate a prompt or a tool
-description change.
+Both directions: a filterable "find me a ..." must not escalate to
+background_task, a feed question must touch a data tool, and a multi-source
+judgment SHOULD escalate.
 """
 import argparse
 import sys

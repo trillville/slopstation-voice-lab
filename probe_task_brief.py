@@ -6,14 +6,10 @@
 Live model, real money, non-deterministic - see harness.py. dry_run=True and
 a FakeJobs, so nothing is queued and nothing reaches the gaming PC.
 
-WHY: asked to research couch co-op games the user does NOT own, the assistant
+Asked to research couch co-op games the user does NOT own, the assistant
 queued a brief limiting the worker to the provided catalog - which IS the
-library, so it asks for unowned games drawn only from owned ones. A rule leak,
-not a whim: RULES binds the ASSISTANT to the catalog, the worker deliberately
-is not (AGENTS.md hands it the library as a resource, plus web access).
-
-So the assertion is about the BRIEF, not the answer: an open-ended research
-request must reach the worker without the assistant's catalog leash on it.
+library. RULES binds the ASSISTANT to the catalog; the worker is not. The
+assertion is about the BRIEF, not the answer.
 """
 import argparse
 import re
@@ -24,12 +20,11 @@ import harness
 # Phrasings that hand the worker the assistant's own leash. Deliberately
 # narrow: "check/compare against/exclude what's in the catalog" must not trip.
 RESTRICTIONS = [
-    # A limiting word anywhere in the ~45 chars before catalog/library. Match
-    # the SHAPE: enumerating phrasings loses to "limited STRICTLY to ...".
+    # A limiting word anywhere in the ~45 chars before catalog/library; match
+    # the SHAPE, not fixed phrasings.
     r"(?:only|solely|exclusively|strictly|restrict\w*|limit\w*|confined"
     r"|must\s+be\s+in)\b[^.]{0,45}(?:catalog|librar)",
-    # The same leash worn backwards: "do not recommend games outside the
-    # catalog" reads like a negation but means a restriction.
+    # The same leash backwards: "do not recommend games outside the catalog".
     r"(?:do\s+not|don'?t|never|avoid)\s+\w*\s*(?:recommend|suggest|include"
     r"|consider|go|look)[^.]{0,45}(?:outside|beyond|not\s+in)[^.]{0,25}"
     r"(?:catalog|librar)",
@@ -37,9 +32,7 @@ RESTRICTIONS = [
 ]
 
 # Intent that must survive into the brief, asserted only where the user
-# actually expressed an exclusion ("what's coming out soon" needs none).
-# Match the SHAPE - a negation close to own/library/catalog - not fixed
-# phrasings: "not already in their library" is a perfect brief.
+# expressed an exclusion. Matches a negation near own/library/catalog.
 OWNS = (r"(?:not|n'?t|exclud\w*|without|outside|beyond)\b[^.]{0,45}"
         r"(?:own|librar|catalog)"
         r"|avoid\s+(?:repeat|duplicat|anything\s+they)"
@@ -60,15 +53,14 @@ PROBES = [
 
 
 def check(brief, wanted):
-    """-> (ok, reason). A brief is bad if it leashes the worker to the
-    catalog, and weak if it drops an exclusion the user actually stated."""
+    """-> (ok, reason). Bad if it leashes the worker to the catalog, weak if
+    it drops an exclusion the user stated."""
     for pat in RESTRICTIONS:
         m = re.search(pat, brief, re.I)
         if m:
             return False, f"catalog leash: ...{m.group(0)!r}..."
     if wanted and not re.search(wanted, brief, re.I):
-        # HEURISTIC, unlike the leash check: no regex models "expresses an
-        # exclusion". A leash failure is a verdict; this one means go look.
+        # Heuristic: a leash failure is a verdict, this one means go look.
         return False, "lost the user's 'games I don't own' intent (heuristic)"
     return True, "open brief, intent preserved"
 
@@ -97,8 +89,8 @@ def main():
                 results.append((None, f"ERROR {e!r}"[:90]))
                 continue
             if not jobs.briefs:
-                # A different failure: all three ask for research the catalog
-                # cannot answer, so an immediate reply invented or refused.
+                # All three asks need research the catalog cannot answer, so
+                # an immediate reply is a different failure.
                 results.append((None, f"no task queued; said {reply[:70]!r}"))
                 continue
             results.append(check(jobs.briefs[-1], wanted) + (jobs.briefs[-1],))

@@ -2,25 +2,15 @@
 # (default C:\Users\tillm\wake), NOT to this file - the data is 16 GB and stays
 # out of the repo.
 #
-# What changed from the 2026-08-15 run and why, since the diff is the whole
-# point of this file:
-#   n_samples        10000 -> 25000    livekit's own prod.yaml; openWakeWord's
-#                                      comment says "20,000 minimum", and stock
-#                                      hey_jarvis used 200,000
-#   steps            50000 -> 100000   prod.yaml. Medium took 12 min at 50k, so
-#                                      this is ~25 min - cheap for the return
-#   n_background_    200 -> 2000       this is a standalone NEGATIVE class in
-#     samples                          the batch, not just augmentation noise;
-#                                      at 200 it was a rounding error beside
-#                                      10,000 adversarial TTS negatives
-#   max_negative_    1500 -> 3000      prod.yaml
-#     weight
-#   custom_negative_ (none) -> below   the bare wake word without its greeting
-#     phrases                          is the commonest false trigger there is
+# n_samples / steps / max_negative_weight follow livekit's prod.yaml:
+# 10000 -> 25000 (openWakeWord's stated minimum is 20,000; stock hey_jarvis
+# used 200,000), 50000 -> 100000 steps (medium took 12 min at 50k, so ~25 min),
+# max_negative_weight 1500 -> 3000.
+# n_background_samples is a standalone NEGATIVE class in the batch, not just
+# augmentation noise.
 #
-# NOT changed, deliberately: augmentation.rounds stays at 1. pipeline.py widens
-# the background SNR to -0..20 dB, and rounds compound - three rounds of a
-# widened mix lands near -18 dB and teaches the model to fire on noise.
+# augmentation.rounds stays at 1: pipeline.py widens the background SNR to
+# 0..20 dB and rounds compound, so three rounds land near -18 dB.
 
 model_name: hey_alfred
 
@@ -28,11 +18,9 @@ target_phrases:
   - "hey alfred"              # hˈeɪ ˈælfɹɪd  - relaxed "AL-frid"
   - "hey al fred"             # how Flux actually renders it (see strip_wake)
 
-# Hard negatives, TTS-generated like the positives. The first entry is the
-# single most valuable one: "alfred" alone, i.e. the wake word with its
-# greeting stripped off, which is what a TV says when a character is named.
-# The rest are the near-misses the phrase invites - it is sonorant-heavy with
-# no sibilant, so its neighbours are many.
+# Hard negatives, TTS-generated like the positives. "alfred" alone - the wake
+# word with its greeting stripped - is what a TV says when a character is
+# named, and the commonest false trigger there is.
 custom_negative_phrases:
   - "alfred"
   - "al fred"
@@ -48,28 +36,19 @@ custom_negative_phrases:
 # RUN-ON POSITIVES, added by pipeline.py's --continuations. Not part of
 # livekit's schema; load_config pops this key.
 #
-# WHAT THEY FIX. Every TTS positive ever generated here is the bare phrase
-# followed by nothing, but the score crests about a second AFTER the talker
-# stops - on the quiet /d/ decay - so a command said in one breath stomps the
-# very window the model needs. Measured on v1.0, user-confirmed true positives:
-# "hey alfred play hades" scores 0.011-0.041 where isolated utterances median
-# 0.678. That is a delivery style the live pre-roll path explicitly supports,
-# and it is off-distribution for every model this repo has trained.
+# The score crests about a second AFTER the talker stops, on the quiet /d/
+# decay, so a command said in one breath stomps the window the model needs:
+# measured on v1.0, "hey alfred play hades" scores 0.011-0.041 where isolated
+# utterances median 0.678. Synthesised whole, not stitched - the phenomenon IS
+# the coarticulation.
 #
-# WHY SYNTHESISED WHOLE rather than stitching a continuation onto an existing
-# clip: the phenomenon IS the coarticulation. In a run-on there is no trailing
-# pause and the /d/ runs straight into the next word, which is exactly what a
-# concatenation cannot reproduce.
-#
-# WHY THEY ARE ALL SHORT. The clip is written into a 2 s window ending at
+# Keep every form under ~1.6 s: the clip is written into a 2 s window ending at
 # target_len minus 0-200 ms of jitter and cropped from the FRONT if it does not
-# fit - so a long continuation crops "hey alfred" off and leaves a positive
-# with no wake word in it. Keep every form under ~1.6 s; check_positive_lengths
-# measures it after generation and says so if this rule gets broken.
+# fit, so a long continuation loses "hey alfred" (check_positive_lengths).
 #
-# The first words are the real command vocabulary from grammar.yaml, chosen for
-# varied onsets (plosive, fricative, nasal, vowel) so the model learns "the
-# phrase, then more speech" rather than "the phrase, then the word play".
+# First words are grammar.yaml's command vocabulary, chosen for varied onsets
+# (plosive, fricative, nasal, vowel) so the model learns "the phrase, then more
+# speech" rather than "the phrase, then the word play".
 continuation_phrases:
   - "hey alfred play"
   - "hey alfred start"
@@ -86,12 +65,10 @@ continuation_phrases:
 
 n_samples: 25000
 n_samples_val: 2000
-# 4000 was TRIED when the pool grew 2,274 -> 6,324 files (2026-08-21, the
-# Bgcount run: 4 seeds vs the 4 pad2 seeds over the same 6 honest heldout
-# hours). It LOST: FA 0.83-1.0/hr at the budget thresholds vs pad2's
-# 0.50-0.83, best noisy recall 47% at +10 dB vs pad2_s0's 55%, ceilings no
-# better. Coverage-per-build is not the binding constraint - do not re-raise
-# this without new evidence; the next levers are data variety and seeds.
+# 4000 was TRIED when the pool grew 2,274 -> 6,324 files (2026-08-21 Bgcount
+# run: 4 seeds vs the 4 pad2 seeds over the same 6 honest heldout hours). It
+# LOST: FA 0.83-1.0/hr at the budget thresholds vs pad2's 0.50-0.83, best noisy
+# recall 47% at +10 dB vs pad2_s0's 55%, ceilings no better.
 n_background_samples: 2000
 n_background_samples_val: 400
 
@@ -100,29 +77,22 @@ output_dir: ./output
 
 augmentation:
   rounds: 1
-  # Globbed **/*.wav, so every subfolder counts. The pool the model learns to
-  # hear through, and the one place recording effort pays back most:
+  # Globbed **/*.wav, so every subfolder counts.
   #
   #   noise/  MUSAN, 774 files. No intelligible speech BY DESIGN - rain, wind,
-  #           DTMF, footsteps. Useless against the thing that actually fires
-  #           this model, which is people talking on television.
-  #   room/   sliced film. Dialogue-heavy, which is the point.
-  #   game/   sliced gameplay. Spectrally a different animal from dialogue -
-  #           percussive transients, compressed VO over a music bed - and the
-  #           source of every confirmed false accept so far.
+  #           DTMF, footsteps.
+  #   room/   sliced film. Dialogue-heavy.
+  #   game/   sliced gameplay - percussive transients, compressed VO over a
+  #           music bed, and the source of every confirmed false accept so far.
   #
   # Aim for room+game to be at least half the pool, split evenly. The augmenter
   # picks a background with random.choice over FILES, so weight is per file:
   # 774 MUSAN against 600 room clips means MUSAN wins 56% of mixes. 40 minutes
   # each of film and gameplay (~600 clips each) puts the room at ~61%.
   #
-  # People TALKING over these recordings is good data, not contamination.
-  # Live conversation - your voices, direct path, real reverb - is the hardest
-  # negative class and the one this pool covers worst: MUSAN has no speech by
-  # design and film dialogue is compressed TV speech off a speaker. The one
-  # rule is that nobody says the wake phrase or its fragments: in a background
-  # it becomes a NEGATIVE and teaches the model to ignore its own phrase, and
-  # in held-out audio it punishes correct fires.
+  # People talking over these recordings is good data. The one rule is that
+  # nobody says the wake phrase or its fragments: in a background it becomes a
+  # NEGATIVE, and in held-out audio it punishes correct fires.
   background_paths: ["data/backgrounds"]
   rir_paths: ["data/rirs"]
 
@@ -131,32 +101,19 @@ model:
   model_size: medium
 
 steps: 100000
-# THE TRAINER RAN OUT OF ROOM AT THIS VALUE. trainer.py doubles the negative
-# weight after phase 1 and again after phase 2 whenever validation FPPH is over
-# target - twice, and never again, so 3000 caps out at 12000. On 2026-08-17 the
-# control models never triggered it and sat at 3000 all run, while EVERY
-# pad-then-mix model doubled twice, reached the ceiling, and still finished
-# 10-17x over the 0.2 FP/hr target. That is the escalation ladder running out
-# of rungs, and it is the leading explanation for the 400k pad models ending up
-# with a 0.913 noise ceiling - they score the room almost as high as they score
-# the phrase. Swept as `-nw` variants rather than raised here, because more
-# negative weight buys precision by spending recall and the trade has never
-# been measured on data without the silence shortcut.
+# trainer.py doubles the negative weight after phase 1 and again after phase 2
+# when validation FPPH is over target - twice, never again, so 3000 caps out at
+# 12000. On 2026-08-17 the controls never triggered it while EVERY pad-then-mix
+# model doubled twice, hit the ceiling and still finished 10-17x over the 0.2
+# FP/hr target. Swept as `-nw` variants rather than raised here.
 max_negative_weight: 3000.0
 
 # Hyperparameter sweep. Every variant trains against BYTE-IDENTICAL data -
-# generate/augment/features run once and are shared - which is the only reason
-# comparing them means anything. pipeline.py refuses a variant that reaches
-# past training into the data stages (TRAINING_ONLY lists what is allowed);
-# to sweep n_samples or the SNR, change it here and re-run the whole thing.
-#
-# Rank the results with Bench.bat, NOT with the eval table. On both sweeps so
-# far the synthetic eval scored every candidate identically with DET curves
-# flat against the axes - it is saturated and ranks nothing.
+# generate/augment/features run once and are shared, and pipeline.py refuses a
+# variant that reaches past training into them (TRAINING_ONLY). Rank the
+# results with Bench.bat: the synthetic eval scores every candidate the same.
 variants:
   medium:       {model: {model_size: medium}}
-  # TRAINING LENGTH, and how the answer changed once the data got honest.
-  #
   # 2026-08-16, on data still carrying the silence shortcut, more steps was the
   # ONE lever that worked - recall with the phrase said over room audio:
   #
@@ -165,38 +122,26 @@ variants:
   #     medium-200k        47%    40%    32%    19%   11%
   #     v1.0 (incumbent)   46%    35%    21%    15%    9%
   #
-  # 2026-08-17, with pad-then-mix, 400k REVERSED it. The long models score
-  # highest on the phrase (peak median 0.978) and almost as high on the room
-  # (noise ceiling 0.913): 1.07x separation, a threshold forced to 0.60-0.70,
-  # and never zero false accepts at any threshold up to 0.80. The 100k pad
-  # model separates 6.2x and holds 88% recall at ZERO false accepts. Reading:
-  # once the shortcut is gone the task is hard, and 400k drives the head to
-  # saturate on anything speech-like, the TV included. Both readings came from
-  # the same table, so neither is safe to generalise - which is why 100k and
-  # 200k are swept across seeds rather than picked.
+  # 2026-08-17, with pad-then-mix, 400k REVERSED it: peak median 0.978 but
+  # noise ceiling 0.913 - 1.07x separation, threshold forced to 0.60-0.70,
+  # never zero false accepts at any threshold up to 0.80. The 100k pad model
+  # separates 6.2x and holds 88% recall at ZERO false accepts. Neither reading
+  # is safe to generalise, so 100k and 200k are swept across seeds.
   medium-200k:  {model: {model_size: medium}, steps: 200000}
-  # 400k is DEFINED but not in the sweep: two seeds of it are precision-broken
-  # (above) and it costs 88 min a model. Re-test it only with a raised negative
-  # weight, which is the hypothesis for why it broke.
+  # 400k is DEFINED but not in the sweep: two seeds are precision-broken
+  # (above) and it costs 88 min a model. Re-test only with a raised negative
+  # weight, the hypothesis for why it broke.
   medium-400k:  {model: {model_size: medium}, steps: 400000}
-  # Same two lengths against the negative weight the trainer could not reach on
-  # its own - see max_negative_weight above. 12000 as the BASE means phase 2/3
-  # can escalate to 48000; the control arm's effective ceiling was 12000.
+  # Same two lengths against a negative weight the trainer cannot reach on its
+  # own: 12000 as the BASE lets phase 2/3 escalate to 48000.
   medium-nw:      {model: {model_size: medium}, max_negative_weight: 12000.0}
   medium-200k-nw: {model: {model_size: medium}, steps: 200000,
                    max_negative_weight: 12000.0}
   # large loses to medium in every generation on every axis - do not re-add it.
-  # The stock hey_jarvis the user reports as more robust in noise uses a DNN
-  # head; every model here is conv_attention. Shares the same data, so this is
-  # the architecture hypothesis tested for the price of one training run - and
-  # the last untested explanation for the jarvis gap that is not signal-side.
-  # It HAS been trained once (v1.2) - but on shortcut data, where the head
-  # could reach a high score without learning much, so that run tested nothing
-  # about architecture. This is its first honest outing.
+  # Stock hey_jarvis, more robust in noise, uses a DNN head; everything here is
+  # conv_attention. Trained once (v1.2) but on shortcut data.
   dnn-medium:   {model: {model_type: dnn, model_size: medium}}
 
 # The ceiling find_best_threshold optimises recall against. Only means anything
-# once make_validation.py has replaced the validation set with real room audio;
-# against livekit's stock synthetic set it produced three sizes that scored
-# identically and could not be ranked.
+# once make_validation.py has replaced the validation set with real room audio.
 target_fp_per_hour: 0.2

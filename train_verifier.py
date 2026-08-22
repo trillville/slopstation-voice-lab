@@ -2,31 +2,22 @@
 
     .venv\\Scripts\\python bench\\train_verifier.py
 
-Runs on the K15, because that is where the clips already are: audio.py writes
-every wake fire's pre-roll to logs/wake/*.wav, and sorting those by ear into
-two folders is the whole labelling job.
+Runs on the K15, where the clips already are: audio.py writes every wake
+fire's pre-roll to logs/wake/*.wav, and labelling is sorting those by ear.
 
     logs\\wake\\yes\\   fires where you really said it
     logs\\wake\\no\\    fires where the TV said something and it woke anyway
 
-WHY a second stage rather than a better threshold: on 2026-08-15 the three
-false accepts scored 0.25 / 0.26 / 0.28 against a median genuine wake of 0.255.
-Nothing on that axis separates them, so no threshold can. openWakeWord's
-verifier is a logistic regression over the SAME embeddings the wake model
-already computed - inference is a dot product - and it gets to look at a
-feature the score does not expose: whose voice this is. Google's cascade paper
-is the precedent (a loose stage 1 plus a verifier beat a single tight stage on
-BOTH axes at once).
+A second stage rather than a better threshold: on 2026-08-15 the three false
+accepts scored 0.25 / 0.26 / 0.28 against a median genuine wake of 0.255, so
+no threshold separates them. openWakeWord's verifier is a logistic regression
+over the same embeddings the wake model already computed, and can see whose
+voice it is.
 
-Its own docs say the negatives may be "previously collected examples of false
-activations", and call that one of the most effective options - which is
-exactly what logs/wake/no is.
-
-TWO THINGS TO KNOW BEFORE ENABLING IT. It REPLACES the score rather than
-gating it, so every threshold measured so far is void and wakeThreshold has to
-be re-derived from --wake-trials afterwards. And it is speaker-specific by
-design ("from a single user"), so it will make the couch worse for guests -
-train it on everyone who uses the room, not only on yourself.
+Before enabling it: it REPLACES the score rather than gating it, so every
+threshold measured so far is void and wakeThreshold must be re-derived from
+--wake-trials. And it is speaker-specific by design, so train it on everyone
+who uses the room or guests get worse service.
 """
 import argparse
 import json
@@ -46,10 +37,9 @@ MIN_POSITIVE = 3                            # openWakeWord's documented floor
 
 
 def check_clips(folder, what):
-    """openWakeWord requires single-channel 16 kHz 16-bit WAV and says so in
-    prose only - it does not validate, it just trains something useless. The
-    clips audio.py writes are already correct; anything hand-recorded may not
-    be, and that is the failure this catches."""
+    """openWakeWord requires single-channel 16 kHz 16-bit WAV but does not
+    validate it - it just trains something useless. audio.py's clips are
+    already correct; hand-recorded ones may not be."""
     wavs = sorted(folder.glob("*.wav"))
     if not wavs:
         sys.exit(f"no wavs in {folder}\n{what}")
@@ -79,11 +69,9 @@ def main():
     if len(pos) < MIN_POSITIVE:
         sys.exit(f"{len(pos)} positives, openWakeWord wants at least {MIN_POSITIVE}")
 
-    # Resolved through the agent's OWN resolver rather than by rebuilding the
-    # path here: the verifier is keyed to one specific model, and a verifier
-    # trained against a different file than the one that will run is a silent
-    # mismatch. Constructing the listener also proves the model still loads.
-    # pa/device are unused until a stream is opened, which this never does.
+    # Resolved through the agent's OWN resolver: the verifier is keyed to one
+    # specific model, and training against a different file than the one that
+    # runs is a silent mismatch. pa/device are unused until a stream opens.
     listener = audio.WakeListener(None, voice, None)
     out = args.out or listener.model_path.with_name(
         f"{listener.model_path.stem}_verifier.pkl")

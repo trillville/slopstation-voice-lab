@@ -2,25 +2,18 @@
 
     .venv\\Scripts\\python bench\\slice_utterances.py positives.wav out\\dir
 
-Feeds two things that both want the same shape - one utterance per wav:
-wake-training/bench_real.py (real-voice recall) and bench/train_verifier.py
-(the verifier's positive examples).
+Feeds wake-training/bench_real.py (real-voice recall) and
+bench/train_verifier.py (positive examples); both want one utterance per wav.
 
-Say the phrase, pause about 3 seconds, repeat - 30 times, varying it the way
-real use varies: from both ends of the couch, quietly, over the TV, mid-sentence
-("hey alfred play hades"). A bench built only from careful clear utterances
-measures a room nobody lives in.
+Say the phrase, pause about 3 seconds, repeat - 30 times, varying it: from both
+ends of the couch, quietly, over the TV, mid-sentence ("hey alfred play hades").
 
-WHY THE LEAD-IN MATTERS, and it is the whole reason this is not a two-line
-silence splitter: openWakeWord scores a ~2 s window ENDING at the current hop,
-so a clip trimmed tight to the phrase gives the model a window that is mostly
-empty and it scores low for reasons that have nothing to do with the model.
-Every clip therefore carries LEAD_S of whatever preceded it, clamped so it can
-never reach back into the previous utterance. Clips that could not get a
-usable lead-in are DROPPED, not written: measured 2026-08-16, five of seven
-short-lead clips scored 0.009-0.19 against their session's median of 0.68 -
-false rejects for every model at once - and "warn but keep" turned into a
-mid-session judgement call the numbers had already made.
+openWakeWord scores a ~2 s window ENDING at the current hop, so a clip trimmed
+tight to the phrase leaves that window mostly empty and scores low. Every clip
+carries LEAD_S of whatever preceded it, clamped so it cannot reach into the
+previous utterance; clips without a usable lead-in are DROPPED. Measured
+2026-08-16: five of seven short-lead clips scored 0.009-0.19 against their
+session median of 0.68 - false rejects for every model at once.
 """
 import sys
 import wave
@@ -31,18 +24,11 @@ import numpy as np
 RATE = 16000
 FRAME = 320                     # 20 ms RMS frames
 LEAD_S = 2.0                    # oWW's window - the clip must fill it
-# THE SCORE PEAKS AFTER THE TALKER STOPS, and this is the second time that has
-# cost a measurement. "alfred" ends on a low-energy /d/, so the energy gate
-# closes while the score is still climbing - it crests 0.7-1.1 s later. Measured
-# 2026-08-16 on room_test.wav against the same 20 utterances streamed
-# continuously (median peak 0.892):
-#
-#     tail 0.5 s -> median 0.396      tail 1.5 s -> median 0.888
-#     tail 1.0 s -> median 0.888      tail 2.0 s -> median 0.888
-#
-# A 0.5 s tail therefore understates every model by more than half and would
-# have been read as "the retrain destroyed the model". 2.0 s is past the point
-# it converges; the extra second costs nothing but a few hops of inference.
+# The score peaks AFTER the talker stops: "alfred" ends on a low-energy /d/, so
+# the energy gate closes while the score is still climbing - it crests 0.7-1.1 s
+# later. Measured 2026-08-16 on room_test.wav, 20 utterances (median peak
+# 0.892): tail 0.5 s -> median 0.396; tail 1.0 / 1.5 / 2.0 s -> median 0.888.
+# 2.0 is past convergence and costs only a few hops of inference.
 TAIL_S = 2.0
 BRIDGE_S = 0.35                 # "hey ... alfred" is one utterance, not two
 MIN_UTTERANCE_S = 0.25
@@ -51,11 +37,9 @@ MIN_LEAD_S = 1.5                # below this the clip is dropped, not written
 
 
 def voiced_frames(pcm):
-    """Frames whose RMS clears a floor taken from the recording itself.
-
-    The floor is the 20th percentile rather than the minimum: a room is never
-    silent, and anchoring to the quietest single frame would put the gate under
-    the noise and call the whole file voiced."""
+    """Frames whose RMS clears a floor taken from the recording itself. The
+    floor is the 20th percentile, not the minimum: a room is never silent, and
+    anchoring to the quietest frame would call the whole file voiced."""
     n = len(pcm) // FRAME
     rms = np.sqrt(np.mean(np.square(
         pcm[:n * FRAME].astype(np.float64).reshape(n, FRAME)), axis=1))
@@ -98,13 +82,9 @@ def main():
     for i, (a, b) in enumerate(keep):
         start_s, end_s = a * FRAME, (b + 1) * FRAME
         # Never reach back into the previous utterance - a clip holding two
-        # phrases is one detection, not two, and quietly deflates recall.
+        # phrases is one detection, not two, and deflates recall.
         lead = min(int(LEAD_S * RATE), start_s - prev_end)
         prev_end = end_s
-        # Dropped, not warned about: a short-lead clip reads as a false reject
-        # for EVERY candidate (measured - see the docstring), so keeping it
-        # punishes the whole bench for the recording's cadence. The utterance
-        # itself is fine; it just needed the ~3 s pause it did not get.
         if lead < MIN_LEAD_S * RATE:
             dropped += 1
             continue

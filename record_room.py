@@ -2,30 +2,19 @@
 
     .venv\\Scripts\\python bench\\record_room.py 2400        (40 minutes)
 
-Runs on the K15, because the point is THIS mic in THIS room: the recording
-becomes background audio a custom wake model is trained against, and the
-model's real failure mode is a TV talking through the couch mic. Play a
-dialogue-heavy film or a game at normal listening volume. Talking over it is
-GOOD data - live voices are the hardest negative class, and the one MUSAN
-(no speech by design) and TV dialogue (compressed, off a speaker) cover
-worst. One rule: nobody says the wake phrase. In a training background it
-becomes a negative and teaches the model to ignore its own phrase; in a
-held-out recording it punishes correct fires.
+Runs on the K15 - the point is THIS mic in THIS room. Close the voice
+supervisor first; it holds the same mic. Play a dialogue-heavy film or a game
+at normal listening volume; talking over it is GOOD data, since live voices
+are the negative class MUSAN (no speech by design) and TV dialogue cover
+worst. One rule: nobody says the wake phrase - in a training background it
+becomes a negative, in a held-out recording it punishes correct fires.
 
-Close the voice supervisor first - it holds the same mic, and two readers on
-one endpoint is a fight neither wins.
-
-WHY it resolves the device rather than taking PortAudio's default: the agent
-binds the mic NAMED in config.json (audio.resolve_device), which is not
-necessarily the Windows default. Recording the default would capture a
-different microphone than the one the model has to survive, and nothing
-downstream would say so - the negatives would just be quietly wrong. Resolved
-with log=None: a bench tool has no business emitting audio_device into prod
-telemetry, and the name is printed here instead.
+Binds the mic NAMED in config.json (audio.resolve_device), not PortAudio's
+default, which may be a different microphone. log=None keeps audio_device out
+of prod telemetry.
 
 Writes room.wav (16 kHz mono, ~77 MB for 40 min) to the current directory,
-gitignored. It is NOT usable as-is: slice it with bench/slice_room.py before
-it reaches the augmenter, and that file's own docstring is the why.
+gitignored. Slice it with bench/slice_room.py before it reaches the augmenter.
 """
 import json
 import sys
@@ -42,8 +31,8 @@ import cglib          # noqa: E402
 
 RATE = 16000
 CHUNK = 1280                                # audio.py's native 80 ms hop
-# Multiply before dividing: a hop is 12.5 chunks per second, so RATE // CHUNK
-# truncates to 12 and quietly makes every duration 4% short.
+# Multiply before dividing: RATE // CHUNK truncates 12.5 to 12 and makes every
+# duration 4% short.
 MINUTE = 60 * RATE // CHUNK                 # chunks per minute of wall clock
 
 
@@ -65,8 +54,7 @@ def main():
     w.setnchannels(1)
     w.setsampwidth(2)
     w.setframerate(RATE)
-    # A silent 40-minute run is indistinguishable from a hung stream, and
-    # finding out at the end costs another 40 minutes and another film.
+    # A silent 40-minute run is indistinguishable from a hung stream.
     for i in range(secs * RATE // CHUNK):
         w.writeframes(stream.read(CHUNK, exception_on_overflow=False))
         if i % MINUTE == 0:

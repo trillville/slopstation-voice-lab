@@ -5,25 +5,15 @@ as it did on the machine that trained it?
     .venv\\Scripts\\python bench\\probe_wake_model.py m.onnx --dump k15.json
     python bench\\probe_wake_model.py --compare gamepc.json k15.json
 
-Not the blind suite: this takes a model path, so it is a bench tool for the
-day a new wake model arrives. See docs/custom-wakeword-design.md.
+Exit code is non-zero on a failed compare.
 
-WHY: the models are trained by livekit-wakeword and run by openWakeWord, and
-that interop is NOT documented upstream - it was verified by measurement
-(2026-08-13) and can only be re-verified the same way. Two failure modes it
-catches, neither of which is visible from a score:
-
-  1. The export stops transferring (a custom op, a changed input signature).
-     The agent would crash-loop every 10 s behind the supervisor.
-  2. The runtimes stop agreeing numerically, which silently voids every
-     FPPH/recall number the training machine reported.
-
-The first ~5 hops are EXPECTED to differ: openWakeWord returns 0.0 while its
-embedding buffer primes, where livekit scores zero-padded audio. Steady-state
-agreement is the assertion; a trained model diverging after warm-up is the
-thing that must stop a deploy.
-
-Exit code is non-zero on a failed compare, so this can gate a model swap.
+Models are trained by livekit-wakeword and run by openWakeWord; that interop
+is NOT documented upstream and was verified by measurement (2026-08-13). It
+catches an export that stops transferring (custom op, changed input signature)
+and runtimes that stop agreeing numerically, which voids the training
+machine's FPPH/recall numbers. The first ~5 hops are EXPECTED to differ:
+openWakeWord returns 0.0 while its embedding buffer primes, where livekit
+scores zero-padded audio. Steady-state agreement is the assertion.
 """
 import argparse
 import json
@@ -78,10 +68,8 @@ def score_livekit(model_path, pcm):
 
 
 def compare(a_path, b_path):
-    """Per-wav, never concatenated: EVERY wav starts a fresh model, so a
-    flattened series hides a warm-up in the middle of it and reads as a
-    steady-state divergence. That false FAIL is easier to hit than the real
-    one it would be masking."""
+    """Per-wav, never concatenated: every wav starts a fresh model, so a
+    flattened series hides a warm-up mid-stream."""
     a, b = (json.loads(Path(p).read_text()) for p in (a_path, b_path))
     if a.keys() != b.keys():
         sys.exit(f"FAIL - different wavs ({sorted(a)} vs {sorted(b)}): "
@@ -92,16 +80,12 @@ def compare(a_path, b_path):
             sys.exit(f"FAIL - {name}: hop count differs "
                      f"({len(a[name])} vs {len(b[name])})")
         x, y = np.array(a[name]), np.array(b[name])
-        # PEAK, not per-hop. The runtimes are equivalent only up to a sub-hop
-        # mel alignment, so on a rising edge - exactly where a wake phrase
-        # lives - the same model legitimately differs by ~0.1 between them
-        # (measured on the shipped hey_jarvis). Asserting per-hop rejects good
-        # models. The wake loop compares a PEAK against a threshold and cares
-        # WHEN it crossed, so those are the two things that have to transfer.
+        # PEAK, not per-hop: the runtimes agree only up to a sub-hop mel
+        # alignment, so on a rising edge the same model differs by ~0.1
+        # (measured on the shipped hey_jarvis).
         dpeak = abs(x.max() - y.max())
-        # Firing hop is read from AFTER warm-up on both sides: openWakeWord
-        # cannot fire during priming by construction, so including it would
-        # score that structural difference as a disagreement.
+        # Firing hop read from AFTER warm-up: openWakeWord cannot fire during
+        # priming, so including it would score that as a disagreement.
         fx, fy = (next((i for i, v in enumerate(s)
                         if i >= WARMUP_HOPS and v >= 0.5), None) for s in (x, y))
         drift = None if fx is None or fy is None else abs(fx - fy)
@@ -153,9 +137,8 @@ def main():
               + (f"  first>=0.5 at hop {fired[0]}" if fired else "  never fired"))
 
     mean = statistics.mean(all_times)
-    # The budget that matters: one hop is 80 ms of wall clock, and the wake
-    # loop must consume the mic stream faster than it fills or PortAudio drops
-    # audio - a missed wake, not a late one.
+    # One hop is 80 ms of wall clock; the wake loop must consume the mic stream
+    # faster than it fills or PortAudio drops audio - a missed wake.
     print(f"\n  per-hop ms      mean={mean:.2f}  "
           f"p95={sorted(all_times)[int(len(all_times) * .95)]:.2f}")
     print(f"  always-on cost  {mean / 80 * 100:.1f}% of one core"

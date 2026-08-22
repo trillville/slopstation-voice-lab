@@ -4,32 +4,25 @@ REM style that currently scores 0.011-0.041? Two cells x four seeds, ~8.5 h.
 REM
 REM     Continuations.bat
 REM
-REM WHAT IS BROKEN. Every TTS positive this repo has ever trained on is the
-REM bare phrase followed by nothing. The score crests about a second AFTER the
-REM talker stops - "alfred" ends on a low-energy /d/ - so a command said in one
-REM breath stomps the exact window the model needs. Measured on v1.0, all
-REM user-confirmed true positives: "hey alfred play hades" scores 0.011-0.041
-REM against a 0.678 median for isolated utterances. Same class of defect as the
-REM silence shortcut: the training window is a shape the microphone never sees.
+REM Every TTS positive this repo has trained on is the bare phrase followed by
+REM nothing, but the score crests about a second AFTER the talker stops, on
+REM "alfred"'s low-energy /d/. Measured on v1.0, user-confirmed true positives:
+REM "hey alfred play hades" scores 0.011-0.041 against a 0.678 isolated median.
 REM
-REM WHAT CHANGES. alfred.yaml's continuation_phrases (12 forms, first words
-REM taken from grammar.yaml's real command vocabulary) join the positives at a
-REM 50/50 split with the bare forms - pipeline.py weights them by repetition
-REM because piper's sampler is a flat cycle over the phrase list.
+REM alfred.yaml's continuation_phrases (12 forms, first words from
+REM grammar.yaml's command vocabulary) join the positives at a 50/50 split with
+REM the bare forms - pipeline.py weights them by repetition because piper's
+REM sampler is a flat cycle over the phrase list.
 REM
-REM THE TRAP THAT WAS MEASURED AND DISARMED FIRST. livekit builds adversarial
-REM negatives by substituting one word of each target phrase. Hand it "hey
-REM alfred play" and it emits "hey alfred clay", "hey alfred nintendo", "hey
-REM alfred amigo" - 39,098 of 133,713 phrases, 29% of the negative corpus,
-REM every one containing the COMPLETE wake phrase and labelled NOT a wake word.
-REM patch_adversarial_from_bare keeps the substitution generator on the two
-REM bare forms; drilled after the patch, 48 of 17,124, the same benign
-REM "hey al frederick" residue today's config already has.
+REM Disarmed first: livekit builds adversarial negatives by
+REM substituting one word of each target phrase, so "hey alfred play" yields
+REM "hey alfred clay", "hey alfred nintendo" - 39,098 of 133,713 phrases, 29% of
+REM the negative corpus, each containing the COMPLETE wake phrase and labelled
+REM NOT a wake word. patch_adversarial_from_bare keeps the generator on the two
+REM bare forms; drilled after the patch, 48 of 17,124.
 REM
-REM NO VERSION BUMP, deliberately. The data recipe changed, which normally
-REM bumps VERSION - but --tag cont already makes every filename and every
-REM results key distinct, and bumping mid-flight would have stranded the v1.3
-REM sweep's bench list. The tag exists for exactly this.
+REM NO VERSION BUMP: --tag cont already makes every filename and results key
+REM distinct, and bumping mid-flight would strand the v1.3 sweep's bench list.
 setlocal
 set TRAIN=%~dp0Train.bat
 set BENCH=%~dp0Bench.bat
@@ -41,10 +34,8 @@ set RUNONS=C:\Users\tillm\wake\bench\runons
 REM ---- SET THESE TWO FROM THE v1.3 BENCH BEFORE LAUNCHING ----------------
 REM CELLS: the recipes that won on real audio. Default is the two negative-
 REM weight-3000 cells, which the synthetic eval favoured at 60%% through the
-REM sweep - confirm against the bench table, since it has reversed that eval
-REM twice. REF: the best v1.3 model, the row every continuation model must
-REM beat. It is the SAME recipe with bare-phrase positives, so the pair is the
-REM experiment.
+REM sweep - confirm against the bench table, which has reversed that eval twice.
+REM REF: the best v1.3 model, the SAME recipe with bare-phrase positives.
 set CELLS=medium medium-200k
 set REF=%A%\hey_alfred_medium_pad_s0_v1.3.onnx
 REM -----------------------------------------------------------------------
@@ -55,9 +46,8 @@ echo  CONTINUATION POSITIVES : %CELLS% : seeds 0,1,2,3
 echo  started %DATE% %TIME%
 echo ============================================================
 REM --from generate, once: the phrase list changed, so pipeline.py clears the
-REM TTS splits and resynthesises (~40-70 min) rather than counting the old
-REM clips as "already complete" and silently training on bare-phrase data.
-REM Seeds 1-3 reuse that corpus, so all four are the same data.
+REM TTS splits and resynthesises (~40-70 min) rather than counting the old clips
+REM as "already complete". Seeds 1-3 reuse that corpus, so all four match.
 call "%TRAIN%" %CELLS% --continuations --pad-then-mix --tag cont --from generate --seed 0 --no-bench
 if errorlevel 1 (echo [FAIL] s0 & set /a FAILS+=1)
 call "%TRAIN%" %CELLS% --continuations --pad-then-mix --tag cont --from train --seed 1 --no-bench
@@ -88,8 +78,8 @@ echo  %TIME%
 echo ============================================================
 REM Without this the experiment is unfalsifiable: only about two of the 50
 REM standard positives are run-ons, and two clips cannot move a number whose
-REM 95%% interval is +/-13 points. Record ~25 of them first - the header of
-REM k15\voice\bench\slice_utterances.py has the drill.
+REM 95%% interval is +/-13 points. Record ~25 - the drill is in the header of
+REM k15\voice\bench\slice_utterances.py.
 if not exist "%RUNONS%" (
   echo.
   echo   *** NO RUN-ON SET at %RUNONS% - SKIPPING THE ONLY BENCH THAT

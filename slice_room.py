@@ -2,18 +2,15 @@
 
     python bench\\slice_room.py room.wav <training-tree>\\data\\backgrounds\\room
 
-Runs on the GAMING PC, and only AFTER `livekit-wakeword setup`: setup skips the
-1.1 GB MUSAN download outright if it finds any wav already under
-data/backgrounds, so clips dropped in early cost you the noise set with no
-error to notice.
+Runs on the GAMING PC, and only AFTER `livekit-wakeword setup`: setup skips
+the 1.1 GB MUSAN download outright, with no error, if it finds any wav already
+under data/backgrounds.
 
-WHY slice at all, when handing the augmenter one long recording is the obvious
-move. It picks a background with random.choice over FILES and only then crops
-it, so weight is per file, not per second. setup fetches 774 MUSAN wavs; one 40-minute
-recording is one candidate in 775 and would land in ~0.1% of the mixes. At 4 s
-a clip, 40 minutes becomes ~600 files and the room reaches ~45% of them, which
-is the entire reason for recording it. 4 s rather than 2 leaves the augmenter
-crop headroom over its 2 s clip_duration.
+The augmenter picks a background with random.choice over FILES and only then
+crops, so weight is per file, not per second. Against setup's 774 MUSAN wavs
+one 40-minute recording lands in ~0.1% of mixes; at 4 s a clip it becomes ~600
+files and reaches ~45%. 4 s rather than 2 leaves crop headroom over the
+augmenter's 2 s clip_duration.
 
 Stdlib only: the training box has no k15 venv.
 """

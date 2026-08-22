@@ -2,18 +2,11 @@
 
     .venv\\Scripts\\python bench\\probe_grounding.py --provider openai
 
-Live model, real money, non-deterministic - see harness.py. Two RULES added
-after live failures, with no coverage until now.
+Live model, real money, non-deterministic - see harness.py.
 
-OWNED. "Recommend something I don't own" must not return a library title; the
-library IS what the user owns, so such an answer contradicts itself.
-
-PROVENANCE. Asked where an answer came from, the model must not disown a good
+OWNED: "recommend something I don't own" must not return a library title.
+PROVENANCE: asked where an answer came from, the model must not disown a real
 one - live, it called five correctly-searched picks an "unsupported guess".
-
-  CAVEAT, and it bounds what a PASS means: the REPL threads state server-side
-  via previous_response_id while the voice lane rebuilds context client-side
-  and drops those items, so this tests the PROMPT rule, not the plumbing.
 """
 import argparse
 import re
@@ -21,8 +14,8 @@ import sys
 
 import harness
 
-# Phrases that disown an answer. Hedging ("not certain I looked that up") is
-# the rule working; the failure is asserting a fabrication that never happened.
+# Phrases that disown an answer. Hedging is fine; asserting a fabrication
+# that never happened is the failure.
 DISOWN = [
     r"unsupported guess", r"\bmade (?:it|them|that) up\b",
     r"(?:not|n't) (?:from )?(?:a )?(?:real|actual|verified) (?:lookup|search|catalog)",
@@ -37,7 +30,7 @@ ASK_FOR_PICKS = ("Recommend some good couch co-op games on Steam that I "
 
 
 def owned_titles(min_len=7):
-    """Library titles long enough to match on: short names ('Fellowship',
+    """Library titles at least min_len long: short names ('Fellowship',
     'Deadlock') occur in ordinary sentences and would manufacture failures."""
     import library
     idx = library.load()

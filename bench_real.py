@@ -1,57 +1,31 @@
 """Rank candidate models on REAL audio through the runtime that will run them.
 
     Bench.bat                    artifacts\\*.onnx PLUS the vendored models in
-                                 k15\\voice\\models - "does it beat the model the
-                                 K15 already runs" is the default question, so
-                                 the incumbent is in the lineup by default
+                                 k15\\voice\\models - the incumbent is in the
+                                 lineup by default
     Bench.bat --models a.onnx b.onnx     just these
     Bench.bat --target-fa 0.5            allow 0.5 false accepts/hour
     Bench.bat --noise-only               negatives only, ranked by noise
-                                 ceiling. The one comparison that works ACROSS
-                                 phrases: recall cannot be compared between
-                                 hey_jarvis and hey_alfred (different words),
-                                 but how hard the same room audio pushes each
-                                 model can - which is the experiment for "is
-                                 the phrase itself the problem"
+                                 ceiling - the one comparison valid ACROSS
+                                 phrases (recall is not: different words)
 
-THIS IS THE ONLY EVAL THAT HAS EVER RANKED THESE MODELS CORRECTLY.
+livekit's eval cannot rank these models: on 2026-08-15 it scored small, medium
+and large identically (3 false positives in 17.85 h, ~99.3% recall, AUT 0.0000)
+and on 2026-08-16 both surviving sizes landed on threshold 0.18 with ~99.8%
+recall. The same three models on 20 s of real couch audio had median peaks of
+0.083, 0.892 and 0.585.
 
-livekit's eval cannot. On 2026-08-15 it scored small, medium and large
-identically - 3 false positives in 17.85 h, ~99.3% recall, AUT 0.0000 - and on
-2026-08-16 it did it again, both surviving sizes landing on threshold 0.18 with
-~99.8% recall and DET curves pinned flat against both axes. That is a saturated
-test: both candidates ace it, so it has no resolving power left. Meanwhile the
-same three models measured on 20 seconds of real couch audio had median peaks
-of 0.083, 0.892 and 0.585 - a ranking the synthetic eval never saw.
+Real voice, real room, and openWakeWord's STREAMING runtime rather than
+livekit's stateless one - the parity gate (2026-08-13) measured the two
+disagreeing by 0.021-0.075 per hop, the gap scaling with head size.
 
-Three things make this different, and all three are necessary:
-
-  * REAL VOICE, not TTS. The positives are the phrase as this household says
-    it, in this room, at couch distance.
-  * REAL ROOM, not MUSAN. The negatives are the actual TV and the actual games.
-  * openWakeWord's STREAMING runtime, not livekit's stateless one. The parity
-    gate (2026-08-13) established that the two disagree by 0.021-0.075 per hop
-    and that the gap scales with head size - so a livekit score is not a
-    prediction about the K15, and ranking on it ranks the wrong thing.
-
-The output is the number that actually matters: with the threshold set as
-tightly as the false-accept budget allows, what fraction of real wake words
-still fire.
-
-TWO WAYS TO GET A LYING ANSWER OUT OF THIS, both hit on 2026-08-16:
-
-  * NEGATIVES ONE MODEL TRAINED ON. If model A saw these clips during training
-    and model B did not, A's noise ceiling is partly memorisation and the
-    comparison is rigged in its favour. Bench negatives must be held out from
-    EVERY candidate, which in practice means recording them after the last
-    model was trained, not carving them out of the background pool.
-  * CLIPS TRIMMED TOO TIGHT. The score crests ~1 s AFTER the talker stops
-    (see slice_utterances.TAIL_S). A short tail understated every model by
-    more than half and read as "the retrain destroyed it".
-
-Both produce a confident, precise, wrong table. Sanity-check any surprising
-result by streaming the whole recording continuously and comparing peaks -
-that path has no clipping and no reset, so it is the arbiter.
+Two ways to get a lying answer, both hit 2026-08-16: negatives one model
+trained on rig the comparison in its favour, so bench negatives must be
+recorded after the last model was trained; and clips trimmed too tight
+understate every model by more than half, because the score crests ~1 s AFTER
+the talker stops (slice_utterances.TAIL_S). Sanity-check a surprise by
+streaming the whole recording continuously and comparing peaks - no clipping,
+no reset.
 """
 import argparse
 import json
@@ -69,22 +43,19 @@ HERE = Path(__file__).resolve().parent          # .../wake-training, in the repo
 
 CHUNK = 1280                    # oWW's native 80 ms hop
 RATE = 16000
-# After a detection the live agent calls model.reset(), so one loud moment can
-# only ever cost ONE false accept. Streaming here without reset (50x cheaper -
-# one pass serves every threshold) and applying the same refractory offline is
-# the same count for far less compute. 1.5 s covers oWW's score decay.
+# After a detection the live agent calls model.reset(), so one loud moment costs
+# at most ONE false accept. Streaming here without reset (50x cheaper - one pass
+# serves every threshold) and applying the refractory offline gives the same
+# count. 1.5 s covers oWW's score decay.
 REFRACTORY_HOPS = 19
 THRESHOLDS = np.round(np.arange(0.02, 1.00, 0.02), 2)
 DRAWS = 3                       # noise draws averaged per SNR cell
 
 
 def wilson(k, n, z=1.96):
-    """95% interval on a proportion, so the table can say how much of a recall
-    difference is real. With 20 positives the half-width around 0.9 is ~0.13 -
-    i.e. a 5-point gap between two models is NOISE at this sample size, and the
-    2026-08-16 bench nearly shipped a decision on exactly such a gap. Wilson
-    rather than normal approximation because n is small and p is near 1, which
-    is where the normal interval is at its worst."""
+    """95% interval on a proportion. With 20 positives the half-width around
+    0.9 is ~0.13, so a 5-point gap between two models is NOISE. Wilson because
+    n is small and p is near 1."""
     if not n:
         return 0.0, 0.0
     p = k / n
@@ -110,11 +81,9 @@ def trace(model, pcm):
 
 
 def count_crossings(scores, threshold):
-    """Distinct detections above `threshold`, one per refractory window.
-
-    Per-hop counting would be wrong by an order of magnitude: oWW holds a high
-    score for a second or more after an event, so a single door slam reads as
-    fifteen false accepts and every model looks equally hopeless."""
+    """Distinct detections above `threshold`, one per refractory window. oWW
+    holds a high score for a second or more after an event, so per-hop counting
+    reads a single door slam as fifteen false accepts."""
     n, i = 0, 0
     while i < len(scores):
         if scores[i] >= threshold:
@@ -126,11 +95,9 @@ def count_crossings(scores, threshold):
 
 
 def active_rms(x):
-    """RMS of the frames that carry the utterance, not of the whole clip.
-
-    Every positive clip is ~2 s of quiet lead-in plus the phrase plus a 2 s
-    tail, so whole-clip RMS is mostly silence and would overstate the SNR of
-    any mix by 10 dB or more - i.e. label a mix "0 dB" that is really +10."""
+    """RMS of the frames that carry the utterance. Every positive clip is ~2 s
+    of quiet lead-in plus the phrase plus a 2 s tail, so whole-clip RMS would
+    overstate the SNR of a mix by 10 dB or more."""
     n = len(x) // 320
     if not n:
         return 0.0
@@ -143,13 +110,9 @@ def active_rms(x):
 
 def mix_at_snr(speech, noise_pool, snr_db, rng):
     """Speech plus a random slice of real room audio at a stated SNR.
-
-    Synthesised rather than recorded on purpose. Saying the phrase over a loud
-    game and slicing the result cannot work - slice_utterances segments by
-    energy, and speech at or below the background is exactly what it cannot
-    find - so recorded noisy positives would be silently biased toward the
-    takes that happened to be loud. Mixing puts the SNR on a dial instead, and
-    the noise is the same held-out room audio the negatives come from."""
+    Synthesised rather than recorded: slice_utterances segments by energy and
+    cannot find speech at or below the background, so recorded noisy positives
+    would be biased toward the loud takes."""
     pool = noise_pool
     while len(pool) < len(speech):
         pool = np.concatenate([pool, noise_pool])
@@ -161,8 +124,8 @@ def mix_at_snr(speech, noise_pool, snr_db, rng):
         return speech
     seg *= (s_rms / (10 ** (snr_db / 20))) / n_rms
     out = speech.astype(np.float64) + seg
-    # Scale the WHOLE mix if it would clip - scaling both parts equally keeps
-    # the SNR exactly where it was asked to be.
+    # Scale the WHOLE mix if it would clip: scaling both parts equally keeps
+    # the SNR where it was asked to be.
     peak = np.abs(out).max()
     if peak > 32767:
         out *= 32767 / peak
@@ -171,20 +134,15 @@ def mix_at_snr(speech, noise_pool, snr_db, rng):
 
 def snr_sweep(model_path, positives, noise_pool, snrs, threshold, seed=0):
     """Recall vs SNR at ONE fixed threshold - the deployed operating point.
-
-    This is the axis the rest of the bench was missing. Clean positives
-    measure a quiet room; negatives measure false accepts under noise; neither
-    measures the phrase being SAID under noise, which is the failure the couch
-    actually reports (20/20 quiet, falls apart with a game running)."""
+    Clean positives measure a quiet room and negatives measure false accepts
+    under noise; neither measures the phrase being SAID under noise."""
     from openwakeword.model import Model
     m = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
     out = {}
     for snr in snrs:
-        # DRAWS repeats, because the noise is an hour of real room audio and
-        # wildly non-stationary: one 4 s slice can be near-silence and the next
-        # an explosion. Measured spread across seeds at a single draw was 6-8
-        # points; averaging draws pulls that down without needing more clips.
-        # Seeded per (model, snr) so every model meets identical mixes.
+        # DRAWS repeats: the room audio is non-stationary and the measured
+        # spread across seeds at a single draw was 6-8 points. Seeded per
+        # (model, snr) so every model meets identical mixes.
         recalls, medians = [], []
         for d in range(DRAWS):
             rng = np.random.default_rng(seed + 1000 * d)
@@ -203,9 +161,8 @@ def bench(model_path, positives, negatives):
     from openwakeword.model import Model
     m = Model(wakeword_models=[str(model_path)], inference_framework="onnx")
 
-    # One peak per positive clip: each clip is ONE utterance, so its peak is
-    # the model's best answer for that utterance, and recall at threshold T is
-    # simply the fraction of clips whose peak clears T. Empty in --noise-only.
+    # One peak per positive clip: each clip is ONE utterance. Empty under
+    # --noise-only.
     peaks = (np.array([trace(m, load_wav(p)).max() for p in positives])
              if positives else np.zeros(0))
 
@@ -219,11 +176,9 @@ def bench(model_path, positives, negatives):
 
 def operating_point(peaks, neg_traces, hours, target_fa):
     """Lowest threshold whose false-accept rate fits the budget, and the recall
-    it buys. Lowest rather than highest because recall falls monotonically as
-    the threshold rises - so the cheapest threshold that satisfies the budget
-    is also the best one that does. Rows carry the raw EVENT COUNT alongside
-    the rate: with thin negatives the count is the honest number (0.22 h means
-    one event IS 4.5/hr, and a rate printed alone hides that resolution)."""
+    it buys - lowest because recall falls monotonically with the threshold.
+    Rows carry the raw EVENT COUNT too: with 0.22 h of negatives one event IS
+    4.5/hr, which a rate alone hides."""
     rows = []
     for t in THRESHOLDS:
         fa = sum(count_crossings(s, t) for s in neg_traces)
@@ -262,11 +217,8 @@ def main():
 
     models = args.models
     if not models:
-        # The vendored models are the incumbents. The default question is
-        # "does anything in artifacts beat what the K15 already runs", so they
-        # are in the lineup unless --models says otherwise - the 2026-08-16
-        # comparison only happened because v1.0 was copied in by hand, and a
-        # bench that only sees the new candidates can only ever crown one.
+        # The vendored models are the incumbents: the default question is "does
+        # anything in artifacts beat what the K15 already runs".
         models = (sorted((root / "artifacts").glob("*.onnx"))
                   + sorted((HERE.parent / "k15" / "voice" / "models")
                            .glob("*.onnx")))
@@ -281,12 +233,8 @@ def main():
                  f"(or pass --noise-only for a negatives-only comparison).")
     if not negatives:
         sys.exit(f"no negatives under {neg_dir}")
-    # Drop paths that are not there rather than dying on the first one.
-    # openWakeWord raises ValueError on a missing file, so an explicit
-    # --models list that names a model whose training run failed would take the
-    # whole bench down and lose every OTHER row with it - the worst possible
-    # outcome for an unattended sweep, where one crashed arm should cost one
-    # row and nothing else.
+    # openWakeWord raises ValueError on a missing file, so one model whose
+    # training run failed would take the whole bench down with it.
     missing = [m for m in models if not Path(m).is_file()]
     models = [m for m in models if Path(m).is_file()]
     for m in missing:
@@ -343,8 +291,7 @@ def main():
         print(f"\n{'model':36}{'peak med':>9}{'peak min':>9}{'noise':>7}"
               f"{'thresh':>7}{'recall':>8}{'95% CI':>12}{'FA':>4}{'/hr':>6}")
         print("-" * 98)
-        # Best first: recall at the operating point IS the ranking. A model
-        # with no operating point never fits the budget and sorts last.
+        # Best first; a model with no operating point sorts last.
         for name, r in sorted(results.items(),
                               key=lambda kv: (kv[1]["recall"] is not None,
                                               kv[1]["recall"] or 0),
@@ -401,10 +348,8 @@ def main():
               "column collapses between +10 and 0\nis the 'fine in a quiet "
               "room, useless with a game on' complaint, measured.")
 
-    # --noise-only writes ELSEWHERE by default. Its rows carry recall=None, so
-    # sharing the filename silently destroyed a full bench and left a results
-    # file that looks complete and answers no recall question - which cost a
-    # re-measurement on 2026-08-16 when a threshold had to be read back out.
+    # --noise-only writes ELSEWHERE by default: its rows carry recall=None, so
+    # a shared filename would overwrite a full bench with a recall-free one.
     out = args.json or root / ("bench_results.noise.json" if args.noise_only
                                else "bench_results.json")
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")

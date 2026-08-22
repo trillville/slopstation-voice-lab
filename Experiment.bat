@@ -3,46 +3,37 @@ REM Five recipes x four seeds, all pad-then-mix. One command, walk away, ~13.5 h
 REM
 REM     Experiment.bat
 REM
-REM WHAT THE LAST ONE SETTLED, so this one does not re-ask it. pad-then-mix
-REM removes the silence shortcut - positives used to carry ~0.9 s of leading
-REM digital silence that openWakeWord's stream never provides. Benched
-REM 2026-08-17 on real voice through the real runtime, recall with the phrase
-REM said OVER room audio, each model at its own threshold:
+REM pad-then-mix removes the silence shortcut - positives used to carry ~0.9 s
+REM of leading digital silence that openWakeWord's stream never provides.
+REM Benched 2026-08-17 on real voice through the real runtime, recall with the
+REM phrase said OVER room audio, each model at its own threshold:
 REM
 REM                              +20dB  +10dB   +5dB   0dB
 REM     pad-then-mix (3 models)  69-81% 45-54% 35-47% 20-29%
 REM     current data (2 models)  28-51% 12-27%  7-17%  5-12%
 REM     v1.0 incumbent             46%    21%    15%     9%
 REM
-REM No overlap anywhere, and the two same-recipe seeds differ by only 6-12
-REM points, so the gap clears seed noise. Four generations had been stuck at
-REM +10 dB = 16-22%. THE CONTROL ARM IS NOT REPEATED HERE - ten models across
-REM five generations agree on it, and v1.0 stays in the bench as the live
-REM reference.
+REM No overlap, and same-recipe seeds differ by only 6-12 points. Four
+REM generations had been stuck at +10 dB = 16-22%. The control arm is NOT
+REM repeated here; v1.0 stays in the bench as the live reference.
 REM
-REM WHAT THIS ONE ASKS. Two factors on data that no longer has the shortcut,
-REM plus one architecture probe:
+REM Factors, on data that no longer has the shortcut:
 REM
 REM   steps            100k vs 200k. 400k reversed sign once the data got
-REM                    honest (alfred.yaml has the numbers), so the useful
-REM                    range moved down, not up.
-REM   negative weight  3000 vs 12000. Not a guess: trainer.py doubles the
-REM                    weight when validation FPPH misses target, twice and no
-REM                    more, and every pad model hit that ceiling and stayed
-REM                    10-17x over budget. The knob was pinned.
-REM   dnn head         one cell. jarvis - the model that behaves better in
-REM                    noise - uses a DNN head, and our one previous try was
-REM                    on shortcut data, which tested nothing.
+REM                    honest (alfred.yaml has the numbers).
+REM   negative weight  3000 vs 12000. trainer.py doubles the weight when
+REM                    validation FPPH misses target, twice and no more, and
+REM                    every pad model hit that ceiling 10-17x over budget.
+REM   dnn head         one cell. jarvis uses a DNN head; our one previous try
+REM                    was on shortcut data.
 REM
-REM WHY FOUR SEEDS. livekit pins no RNG, so every run is a draw, and seed
-REM variance has been larger than most effects chased here (clean 64% vs 86%
-REM on byte-identical features). A cell is a DISTRIBUTION; compare ranges,
-REM never best-vs-best. Four is what the budget bought after cutting the
-REM control arm and 400k.
+REM FOUR SEEDS: livekit pins no RNG and seed variance has beaten most effects
+REM chased here (clean 64% vs 86% on byte-identical features) - a cell is a
+REM DISTRIBUTION, so compare ranges, never best-vs-best.
 REM
-REM ORDERING. Every model shares ONE dataset, so seed 0 builds it (--from
-REM augment) and seeds 1-3 reuse it (--from train). All five variants train
-REM inside one invocation per seed, which is what makes them paired.
+REM ORDERING: all models share ONE dataset, so seed 0 builds it (--from augment)
+REM and seeds 1-3 reuse it (--from train). All five variants train in one
+REM invocation per seed, which is what pairs them.
 setlocal
 set TRAIN=%~dp0Train.bat
 set BENCH=%~dp0Bench.bat
@@ -71,12 +62,10 @@ echo  BENCH - real voice, real room, recall vs SNR
 echo  %TIME%
 echo ============================================================
 REM The 20 new models, listed explicitly: the default glob would also re-score
-REM ~18 superseded artifacts at ~6 min each. The _v1.2 rows are last night's
-REM survivors, kept because bench_real.py REWRITES its results file rather than
-REM merging - anything unlisted vanishes from it. medium_pad_s1_v1.2 is also
-REM the model most likely to be deployed when this starts, so it is the row
-REM every new one has to beat; against it, medium_s2_v1.2 is the same recipe
-REM WITHOUT pad-then-mix, and the pair is the effect this sweep builds on.
+REM ~18 superseded artifacts at ~6 min each. bench_real.py REWRITES its results
+REM file rather than merging, so anything unlisted vanishes from it - hence the
+REM _v1.2 rows: medium_pad_s1_v1.2 is the row every new one has to beat, and
+REM medium_s2_v1.2 is the same recipe WITHOUT pad-then-mix.
 call "%BENCH%" --snr-sweep --models ^
  "%A%\hey_alfred_medium_pad_s0_v1.3.onnx"        "%A%\hey_alfred_medium_pad_s1_v1.3.onnx" ^
  "%A%\hey_alfred_medium_pad_s2_v1.3.onnx"        "%A%\hey_alfred_medium_pad_s3_v1.3.onnx" ^

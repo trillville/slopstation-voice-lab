@@ -5,27 +5,18 @@
     .venv\\Scripts\\python bench\\probe_stt.py --no-keyterms   (no boost at all)
     .venv\\Scripts\\python bench\\probe_stt.py --sweep         (fuzzyTitleThreshold)
 
-Live Deepgram, real money, non-deterministic - see harness.py. Reads nothing
-from the room: Windows SAPI speaks each utterance, so this measures the STT
-config and not tonight's couch. It cannot tell you the array is aimed; it CAN
-tell you a config change moved things, which is what nobody could answer.
+Live Deepgram, real money, non-deterministic - see harness.py. Windows SAPI
+speaks each utterance, so this measures the STT config, not tonight's room.
+Exit code is the number of failing probes.
 
-WHY (2026-08-14, read out of the logs): keyterms were Steam's own strings, so
-Flux was taught ARMORED CORE VI FIRES OF RUBICON while the couch says
-"armored core six". The boost half-fired - ARMORED CORSICS, ARMORED COSTS,
-ARMOR CORE 6, "thyroid core 6" - and 11 of 12 launches missed.
+2026-08-14: keyterms were Steam's own strings, so Flux was taught ARMORED CORE
+VI FIRES OF RUBICON while the couch says "armored core six" - ARMORED CORSICS,
+ARMOR CORE 6, "thyroid core 6", and 11 of 12 launches missed.
 
-The bar is never a pretty transcript. It is whether the gate's own path -
-grammar match, then slot, then resolver - produces the thing that makes the
-room change: an appid, a collection id, a nav kind. A transcript that reads
-fine and resolves to nothing is a failure here, which is the point.
-
-NEGATIVES matter as much as the hits, and more when sweeping a threshold.
-They are titles the user OWNS but has not installed: the resolver must refuse
-them, because the failure mode of a loose threshold is not a miss, it is
-launching the wrong game.
-
-Exit code is the number of failing probes, so this can gate a config change.
+The bar is the gate's own path - grammar, slot, resolver - producing an appid,
+collection id or nav kind; a transcript that reads fine and resolves to
+nothing is a failure. Negatives are titles the user OWNS but has not
+installed: a loose threshold launches the wrong game.
 """
 import argparse
 import asyncio
@@ -36,10 +27,8 @@ import tempfile
 import wave
 from pathlib import Path
 
-# Path setup inline rather than via harness: that module is the LLM probes'
-# plumbing (fake job store, trial loops, a live backend per trial) and this
-# probe drives the STT socket instead, so importing it would buy a sys.path
-# and a misleading dependency.
+# Path setup inline: harness is the LLM probes' plumbing, and this probe
+# drives the STT socket instead.
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))            # k15/voice
 sys.path.insert(0, str(HERE.parents[2] / "k15"))
@@ -54,9 +43,9 @@ URL = "wss://api.deepgram.com/v2/listen"
 RATE = 16000
 CHUNK = 3200                                    # 100 ms of s16 mono
 
-# (utterance, kind, expected). kind picks which of the gate's resolution paths
-# has to succeed; expected is matched case-insensitively against what came
-# back, or is None for a negative that must resolve to nothing.
+# (utterance, kind, expected). kind picks which resolution path must succeed;
+# expected is matched case-insensitively, or None for a negative that must
+# resolve to nothing.
 CASES = [
     ("play armored core six", "game", "ARMORED CORE"),
     ("i want to play armored core six", "game", "ARMORED CORE"),
@@ -74,9 +63,7 @@ CASES = [
     ("show me my downloads", "nav", "downloads"),
     ("show me the store", "nav", "store"),
     ("go to my library", "nav", "library"),
-    # Negatives: owned but NOT installed, so the only correct answer is
-    # "nothing". A threshold loose enough to match one of these launches the
-    # wrong game, which is worse than any miss.
+    # Negatives: owned but NOT installed, so the only answer is "nothing".
     ("play counter strike", "game", None),
     ("play half life two", "game", None),
     ("play team fortress two", "game", None),
@@ -107,11 +94,9 @@ def synth(voice, text, path):
 
 
 async def transcribe(pcm, api_key, keyterms):
-    """One utterance through Flux; returns the EndOfTurn transcript.
-
-    Trailing silence is what ENDS the turn - Flux is a turn model, not a
-    stream-to-text - so without it the socket just waits and the probe hangs.
-    """
+    """One utterance through Flux; returns the EndOfTurn transcript. Trailing
+    silence is what ENDS the turn - Flux is a turn model, not stream-to-text -
+    so without it the socket just waits."""
     import websockets
     from urllib.parse import urlencode
     params = ["model=flux-general-en", f"sample_rate={RATE}",
@@ -126,10 +111,8 @@ async def transcribe(pcm, api_key, keyterms):
             for i in range(0, len(pcm), CHUNK):
                 await ws.send(pcm[i:i + CHUNK])
                 await asyncio.sleep(0.01)       # pace it like a live mic
-            # Keep the silence COMING. Flux ends a turn on the audio it
-            # receives, not on a gap in delivery, so a single trailing buffer
-            # and then nothing leaves the turn open until the socket times
-            # out - which read as a probe hang.
+            # Keep the silence COMING: Flux ends a turn on the audio it
+            # receives, not on a gap in delivery.
             while True:
                 await ws.send(b"\x00" * CHUNK)
                 await asyncio.sleep(0.05)
@@ -148,8 +131,7 @@ async def transcribe(pcm, api_key, keyterms):
 
 
 def act(matcher, resolve_game, resolve_coll, kind, heard):
-    """The gate's own path: grammar match, then slot, then resolver. Returns
-    what would actually reach dispatch, or None."""
+    """Grammar match, then slot, then resolver - what would reach dispatch."""
     m = matcher.match(heard)
     if m is None:
         return None
@@ -174,8 +156,8 @@ def keyterm_set(mode, voice):
 
 
 def hear_all(cases, voices, key, keyterms, tmp):
-    """Transcribe every case once. The sweep reuses these, so a threshold
-    comparison changes exactly one variable and costs nothing extra."""
+    """Transcribe every case once; the sweep reuses these, so a threshold
+    comparison changes exactly one variable."""
     out = []
     for voice in voices:
         for i, (spoken, kind, expect) in enumerate(cases):
@@ -206,9 +188,8 @@ def report(heard_rows, matcher, resolve_game, resolve_coll):
 
 
 def sweep(heard_rows, matcher, voice_cfg):
-    """Same transcripts, resolver threshold varied. Prints hits and, more
-    importantly, whether a looser threshold starts matching a game the user
-    owns but never installed - that is a wrong launch, not a miss."""
+    """Same transcripts, resolver threshold varied. Flags a threshold loose
+    enough to match a game the user owns but never installed."""
     print(f"\n{'thresh':>7}  {'resolved':>9}  {'FALSE MATCH':>12}   detail")
     for th in SWEEP_THRESHOLDS:
         rg = titles.build_resolver(th)
@@ -255,8 +236,7 @@ def main():
         print("no installed titles indexed - run library.py sync")
         return 1
     # The gate matches the grammar FIRST and resolves only the slot, so the
-    # resolver never sees "play " or the trailing period. Handing it the whole
-    # transcript measures a pipeline that does not exist.
+    # resolver never sees "play " or the trailing period.
     matcher = GrammarMatcher(voice_cfg)
 
     voices = [args.voice] if args.voice else VOICES

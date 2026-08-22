@@ -1,9 +1,8 @@
 """Shared plumbing for the live behavioural probes in this directory.
 
-Not the blind suite: these call the real model, cost real money and are
-non-deterministic - only a live probe catches the model reaching for a
-destructive tool. Every trial builds a FRESH backend; reusing one carries
-conversation state between probes and makes a flaky failure look fixed.
+Not the blind suite: these call the real model, cost money and are
+non-deterministic. Every trial builds a FRESH backend - reusing one carries
+conversation state between probes.
 """
 import json
 import sys
@@ -20,15 +19,9 @@ import dispatch as dp  # noqa: E402
 
 
 class FakeJobs:
-    """Stands in for the Tier-3 JobStore and keeps the briefs. jobs=None makes
-    background_task refuse, so a probe about brief QUALITY measures nothing.
-
-    The signature tracks jobs.JobStore.enqueue, and test_jobs pins that it
-    still does. It drifted once, when `asked` arrived: the tool called this
-    double with a keyword it did not take, the TypeError surfaced through the
-    trial loop's `except Exception` as an API blip, and probe_task_brief read
-    FAIL 3/3 on briefs it had never been handed.
-    """
+    """Tier-3 JobStore double that keeps the briefs. jobs=None makes
+    background_task refuse. Signature tracks jobs.JobStore.enqueue (test_jobs
+    pins it); drift surfaces as a TypeError read as an API blip."""
 
     def __init__(self):
         self.briefs = []
@@ -48,21 +41,17 @@ def load():
 
 
 def resolve(cfg, provider=None, model=None):
-    """Follows the local, untracked config.json unless overridden - a prompt
-    that behaves on Haiku can still misfire under GPT-5.6."""
+    """Follows the local, untracked config.json unless overridden."""
     provider = provider or cfg["voice"]["assistantProvider"]
     return provider, (model or assistant.default_model(cfg, provider))
 
 
 def run_convo(cfg, secrets, provider, model, utterances):
     """One trial of N turns on ONE backend, so later turns see the earlier
-    ones. Returns (calls, replies, jobs); calls is [(tool_name, args), ...]
-    in the order the model made them, across all turns.
-
-    Memory probes here test the PROMPT rule, not production: OpenAIBackend
-    threads state server-side via previous_response_id, while the voice lane
-    rebuilds an LLMContext client-side and drops those items.
-    """
+    ones. Returns (calls, replies, jobs); calls is [(tool_name, args), ...] in
+    call order. Memory probes test the PROMPT rule, not production:
+    OpenAIBackend threads state server-side via previous_response_id while the
+    voice lane rebuilds an LLMContext client-side and drops those items."""
     log = cglib.CapturingLog("probe")
     jobs = FakeJobs()
     impls = assistant.tool_impls(
