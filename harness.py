@@ -20,7 +20,7 @@ import dispatch as dp  # noqa: E402
 
 
 class FakeJobs:
-    """Tier-3 JobStore double that keeps the briefs. jobs=None makes
+    """Background-task JobStore double that keeps the briefs. jobs=None makes
     background_task refuse. Signature tracks jobs.JobStore.enqueue (test_jobs
     pins it); drift surfaces as a TypeError read as an API blip."""
 
