@@ -43,7 +43,7 @@ DISRUPTIVE = ("end_session", "start_session", "switch_input",
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", choices=list(harness.assistant.BACKENDS))
+    ap.add_argument("--provider", choices=list(harness.assistant_repl.BACKENDS))
     ap.add_argument("--model")
     ap.add_argument("--trials", type=int, default=8,
                     help="the incident reproduced at 1/3, so 3 is too few to "

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "k15"))
 
 import cglib          # noqa: E402
 import assistant      # noqa: E402
+import assistant_repl  # noqa: E402
 import dispatch as dp  # noqa: E402
 
 
@@ -64,7 +65,7 @@ def run_convo(cfg, secrets, provider, model, utterances):
             calls.append((_n, args))
             return _i(args)
         impls[name] = wrap
-    backend = assistant.BACKENDS[provider](
+    backend = assistant_repl.BACKENDS[provider](
         secrets, model, effort=cfg["voice"]["assistantReasoningEffort"],
         voice=cfg["voice"])
     system = assistant.system_instruction(cfg)
