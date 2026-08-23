@@ -32,11 +32,11 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))            # k15/voice
 sys.path.insert(0, str(HERE.parents[2] / "k15"))
 
-import cglib                                    # noqa: E402
-import library                                  # noqa: E402
-import session_runtime                          # noqa: E402
-import titles                                   # noqa: E402
-from grammar_gate import GrammarMatcher         # noqa: E402
+import cglib
+import library
+import session_runtime
+import titles
+from grammar_gate import GrammarMatcher
 
 URL = "wss://api.deepgram.com/v2/listen"
 RATE = 16000

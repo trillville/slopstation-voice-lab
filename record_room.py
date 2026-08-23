@@ -26,8 +26,8 @@ ROOT = HERE.parents[2]                      # .../slopstation
 sys.path.insert(0, str(HERE.parent))        # k15/voice
 sys.path.insert(0, str(ROOT / "k15"))
 
-import audio          # noqa: E402
-import cglib          # noqa: E402
+import audio
+import cglib
 
 RATE = 16000
 CHUNK = 1280                                # audio.py's native 80 ms hop

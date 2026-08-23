@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from workers import ClaudeWorker                                  # noqa: E402
+from workers import ClaudeWorker
 
 ASK = ("List the exact names of every tool you have available, "
        "comma-separated, nothing else.")

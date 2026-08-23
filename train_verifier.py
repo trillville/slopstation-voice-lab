@@ -30,8 +30,8 @@ ROOT = HERE.parents[2]                      # .../slopstation
 sys.path.insert(0, str(HERE.parent))        # k15/voice
 sys.path.insert(0, str(ROOT / "k15"))
 
-import audio          # noqa: E402
-import cglib          # noqa: E402
+import audio
+import cglib
 
 MIN_POSITIVE = 3                            # openWakeWord's documented floor
 
