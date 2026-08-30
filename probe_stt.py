@@ -3,6 +3,8 @@
     .venv\\Scripts\\python bench\\probe_stt.py
     .venv\\Scripts\\python bench\\probe_stt.py --raw-names     (the old keyterms)
     .venv\\Scripts\\python bench\\probe_stt.py --no-keyterms   (no boost at all)
+    .venv\\Scripts\\python bench\\probe_stt.py --raw-tags     (SteamSpy's tag strings)
+    .venv\\Scripts\\python bench\\probe_stt.py --capitalized  (proper-noun case)
     .venv\\Scripts\\python bench\\probe_stt.py --sweep         (fuzzyTitleThreshold)
 
 Live Deepgram, real money, non-deterministic. Windows SAPI speaks each
@@ -144,13 +146,41 @@ def act(matcher, resolve_game, resolve_coll, kind, heard):
     return str(slots["target"]) if intent == "Nav" else None
 
 
+def _capitalized(term):
+    """Deepgram documents proper-noun capitalization and says keyterm case
+    influences the transcript; keyterm_forms lowercases instead. The
+    2026-08-14 measurement that settled that moved case, numerals AND the
+    subtitle at once, so case alone was never tested. Free to try - the gate
+    and both resolvers run spoken_form first, so nothing downstream sees it."""
+    return " ".join(w[:1].upper() + w[1:] for w in term.split())
+
+
+def _pre_branch_tags(voice):
+    """The vocabulary before spoken_form and GENERIC_TERMS reached the tag
+    words: SteamSpy's own strings, 'Rogue-like' and 'Action' included."""
+    catalog = library.Catalog.load()
+    terms = ["hey jarvis"]
+    for name in session_runtime.load_titles(voice["keytermCount"], catalog.installed):
+        terms += titles.keyterm_forms(name)
+    terms += [titles.spoken_form(c["name"]) for c in catalog.collections
+              if c.get("name")]
+    terms += library.query_terms(session_runtime.QUERY_TERM_SLOTS)
+    return list(dict.fromkeys(terms))[:session_runtime.MAX_KEYTERMS]
+
+
 def keyterm_set(mode, voice):
-    """The three lists worth comparing: what ships, what used to ship, none."""
+    """The lists worth comparing: what ships, what shipped before it, the two
+    open questions, none."""
     if mode == "none":
         return []
     if mode == "raw":                           # pre-fix: Steam's own strings
         return (["hey jarvis"] + session_runtime.load_titles(voice["keytermCount"])
-                + library.query_terms())
+                + library.query_terms(session_runtime.QUERY_TERM_SLOTS))
+    if mode == "raw-tags":
+        return _pre_branch_tags(voice)
+    if mode == "capitalized":
+        return [_capitalized(t) for t in
+                session_runtime.stt_keyterms(voice, "hey jarvis")]
     return session_runtime.stt_keyterms(voice, "hey jarvis")
 
 
@@ -215,12 +245,18 @@ def main():
     ap.add_argument("--raw-names", action="store_true",
                     help="use the pre-fix keyterms (Steam's strings)")
     ap.add_argument("--no-keyterms", action="store_true")
+    ap.add_argument("--raw-tags", action="store_true",
+                    help="tag words as SteamSpy writes them (pre-spoken_form)")
+    ap.add_argument("--capitalized", action="store_true",
+                    help="the shipping forms, proper-noun capitalization")
     ap.add_argument("--sweep", action="store_true",
                     help="vary fuzzyTitleThreshold over the same transcripts")
     ap.add_argument("--voice", default=None, help="one SAPI voice instead of all")
     args = ap.parse_args()
 
-    mode = "raw" if args.raw_names else "none" if args.no_keyterms else "spoken"
+    mode = ("raw" if args.raw_names else "none" if args.no_keyterms
+            else "raw-tags" if args.raw_tags
+            else "capitalized" if args.capitalized else "spoken")
     cfg = cglib.load_config()
     key = cglib.load_secrets().get("deepgramApiKey")
     if not cglib.real_key(key):
