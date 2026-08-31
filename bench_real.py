@@ -1,7 +1,7 @@
 """Rank candidate models on REAL audio through the runtime that will run them.
 
     Bench.bat                    artifacts\\*.onnx PLUS the vendored models in
-                                 k15\\voice\\models - the incumbent is in the
+                                 k15\\agent\\models - the incumbent is in the
                                  lineup by default
     Bench.bat --models a.onnx b.onnx     just these
     Bench.bat --target-fa 0.5            allow 0.5 false accepts/hour
@@ -220,7 +220,7 @@ def main():
         # The vendored models are the incumbents: the default question is "does
         # anything in artifacts beat what the K15 already runs".
         models = (sorted((root / "artifacts").glob("*.onnx"))
-                  + sorted((HERE.parent / "k15" / "voice" / "models")
+                  + sorted((HERE.parent / "k15" / "agent" / "models")
                            .glob("*.onnx")))
         seen = set()
         models = [m for m in models
@@ -229,7 +229,7 @@ def main():
     if not positives and not args.noise_only:
         sys.exit(f"no positives under {pos_dir}\n"
                  f"Record yourself saying the wake phrase and split it with "
-                 f"k15/voice/bench/slice_utterances.py - ONE utterance per wav "
+                 f"k15/agent/bench/slice_utterances.py - ONE utterance per wav "
                  f"(or pass --noise-only for a negatives-only comparison).")
     if not negatives:
         sys.exit(f"no negatives under {neg_dir}")

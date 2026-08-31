@@ -31,14 +31,13 @@ from pathlib import Path
 
 # Path setup inline: this probe drives the STT socket, not the assistant.
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))            # k15/voice
 sys.path.insert(0, str(HERE.parents[2] / "k15"))
 
 import cglib
-import library
-import session_runtime
-import titles
-from grammar_gate import GrammarMatcher
+from agent.tools import library
+from agent.speech import session_runtime
+from agent.tools import titles
+from agent.speech.grammar_gate import GrammarMatcher
 
 URL = "wss://api.deepgram.com/v2/listen"
 RATE = 16000

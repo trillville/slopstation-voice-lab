@@ -23,10 +23,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]                      # .../slopstation
-sys.path.insert(0, str(HERE.parent))        # k15/voice
 sys.path.insert(0, str(ROOT / "k15"))
 
-import audio
+from agent.speech import audio
 import cglib
 
 RATE = 16000

@@ -44,7 +44,7 @@ def clips(wav_paths, window):
         audio, sr = sf.read(str(path), dtype="float32")
         if sr != RATE:
             sys.exit(f"{path.name}: {sr} Hz, need {RATE}. Record with "
-                     f"k15/voice/bench/record_room.py, which writes 16 kHz mono.")
+                     f"k15/agent/bench/record_room.py, which writes 16 kHz mono.")
         if audio.ndim > 1:
             audio = audio[:, 0]
         for start in range(0, len(audio) - window + 1, window):
