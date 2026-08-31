@@ -1,0 +1,15 @@
+# Direct imports of pipeline.py, bench_real.py and make_validation.py.
+#
+# UNPINNED, and not a venv this repo builds: Train.bat runs %WAKE_VENV%
+# (default C:\Users\tillm\wake\.venv), which lives with the training DATA on
+# the gaming PC because torch+CUDA is 16 GB. Nothing here has ever been frozen,
+# so this file answers "what do I install", not "which versions ran".
+#
+# torch needs its own index for a CUDA build; install that first, from
+# pytorch.org, then the rest.
+livekit-wakeword
+numpy
+openwakeword
+PyYAML
+soundfile
+torch
