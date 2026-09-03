@@ -11,9 +11,8 @@ ends of the couch, quietly, over the TV, mid-sentence ("hey alfred play hades").
 openWakeWord scores a ~2 s window ENDING at the current hop, so a clip trimmed
 tight to the phrase leaves that window mostly empty and scores low. Every clip
 carries LEAD_S of whatever preceded it, clamped so it cannot reach into the
-previous utterance; clips without a usable lead-in are DROPPED. Measured
-2026-08-16: five of seven short-lead clips scored 0.009-0.19 against their
-session median of 0.68 - false rejects for every model at once.
+previous utterance; clips without a usable lead-in are DROPPED, because a
+short lead scores as a false reject for every model at once.
 """
 
 import sys
@@ -25,11 +24,9 @@ import numpy as np
 RATE = 16000
 FRAME = 320  # 20 ms RMS frames
 LEAD_S = 2.0  # oWW's window - the clip must fill it
-# The score peaks AFTER the talker stops: "alfred" ends on a low-energy /d/, so
-# the energy gate closes while the score is still climbing - it crests 0.7-1.1 s
-# later. Measured 2026-08-16 on room_test.wav, 20 utterances (median peak
-# 0.892): tail 0.5 s -> median 0.396; tail 1.0 / 1.5 / 2.0 s -> median 0.888.
-# 2.0 is past convergence and costs only a few hops of inference.
+# The score peaks ~1 s AFTER the talker stops: "alfred" ends on a low-energy
+# /d/, so the energy gate closes while the score is still climbing. A 0.5 s
+# tail halves the median peak; 2.0 is past convergence and costs a few hops.
 TAIL_S = 2.0
 BRIDGE_S = 0.35  # "hey ... alfred" is one utterance, not two
 MIN_UTTERANCE_S = 0.25

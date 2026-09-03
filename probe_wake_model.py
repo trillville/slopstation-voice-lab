@@ -3,15 +3,15 @@ as it did on the machine that trained it?
 
     .venv\\Scripts\\python -m slopstation.agent.bench.probe_wake_model models\\hey_x_v1.0.onnx
     .venv\\Scripts\\python -m slopstation.agent.bench.probe_wake_model m.onnx --dump k15.json
-    python bench\\probe_wake_model.py --compare gamepc.json k15.json
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_wake_model --compare gamepc.json k15.json
 
 Exit code is non-zero on a failed compare.
 
 Models are trained by livekit-wakeword and run by openWakeWord; that interop
-is NOT documented upstream and was verified by measurement (2026-08-13). It
-catches an export that stops transferring (custom op, changed input signature)
-and runtimes that stop agreeing numerically, which voids the training
-machine's FPPH/recall numbers. The first ~5 hops are EXPECTED to differ:
+is NOT documented upstream and was verified by measurement. It catches an
+export that stops transferring (custom op, changed input signature) and
+runtimes that stop agreeing numerically, which voids the training machine's
+FPPH/recall numbers. The first ~5 hops are EXPECTED to differ:
 openWakeWord returns 0.0 while its embedding buffer primes, where livekit
 scores zero-padded audio. Steady-state agreement is the assertion.
 """

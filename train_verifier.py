@@ -8,11 +8,10 @@ fire's pre-roll to logs/wake/*.wav, and labelling is sorting those by ear.
     logs\\wake\\yes\\   fires where you really said it
     logs\\wake\\no\\    fires where the TV said something and it woke anyway
 
-A second stage rather than a better threshold: on 2026-08-15 the three false
-accepts scored 0.25 / 0.26 / 0.28 against a median genuine wake of 0.255, so
-no threshold separates them. openWakeWord's verifier is a logistic regression
-over the same embeddings the wake model already computed, and can see whose
-voice it is.
+A second stage rather than a better threshold: TV false accepts score the same
+as genuine wakes, so no threshold separates them. openWakeWord's verifier is a
+logistic regression over the same embeddings the wake model already computed,
+and can see whose voice it is.
 
 Before enabling it: it REPLACES the score rather than gating it, so every
 threshold measured so far is void and wakeThreshold must be re-derived from

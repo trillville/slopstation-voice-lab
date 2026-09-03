@@ -9,17 +9,15 @@
                                  ceiling - the one comparison valid ACROSS
                                  phrases (recall is not: different words)
 
-livekit's eval cannot rank these models: on 2026-08-15 it scored small, medium
-and large identically (3 false positives in 17.85 h, ~99.3% recall, AUT 0.0000)
-and on 2026-08-16 both surviving sizes landed on threshold 0.18 with ~99.8%
-recall. The same three models on 20 s of real couch audio had median peaks of
-0.083, 0.892 and 0.585.
+livekit's eval cannot rank these models: it scored small, medium and large
+identically on its synthetic set, while the same three on 20 s of real couch
+audio had median peaks of 0.083, 0.892 and 0.585.
 
 Real voice, real room, and openWakeWord's STREAMING runtime rather than
-livekit's stateless one - the parity gate (2026-08-13) measured the two
-disagreeing by 0.021-0.075 per hop, the gap scaling with head size.
+livekit's stateless one - the parity gate measured the two disagreeing by
+0.021-0.075 per hop, the gap scaling with head size.
 
-Two ways to get a lying answer, both hit 2026-08-16: negatives one model
+Two ways to get a lying answer, both seen: negatives one model
 trained on rig the comparison in its favour, so bench negatives must be
 recorded after the last model was trained; and clips trimmed too tight
 understate every model by more than half, because the score crests ~1 s AFTER

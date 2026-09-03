@@ -150,8 +150,8 @@ def main():
     print(
         f"\nAt target_fp_per_hour {cfg.target_fp_per_hour}, the tuned "
         f"threshold gets a budget of\n{budget:.1f} false positives across "
-        f"all {total_h:.2f} h. The 2026-08-15 sweep spent 3 of those on the "
-        f"stock\nset alone, so a candidate that fires even once on your room "
+        f"all {total_h:.2f} h. One sweep spent 3 of those on the stock\nset "
+        f"alone, so a candidate that fires even once on your room "
         f"is now pushed to a\nhigher threshold than one that never does - "
         f"which is the discrimination the\neval was missing entirely."
     )

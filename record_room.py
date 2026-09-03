@@ -14,7 +14,8 @@ default, which may be a different microphone. log=None keeps audio_device out
 of prod telemetry.
 
 Writes room.wav (16 kHz mono, ~77 MB for 40 min) to the current directory,
-gitignored. Slice it with bench/slice_room.py before it reaches the augmenter.
+gitignored. Slice it with wake-training/slice_room.py before it reaches the
+augmenter.
 """
 
 import json

@@ -36,7 +36,7 @@ from livekit.wakeword.export.onnx import run_export
 from livekit.wakeword.training.trainer import run_train
 
 # torch.onnx's exporter prints U+2705 and the Windows console is cp1252, so
-# export dies with UnicodeEncodeError AFTER training finishes (2026-08-15).
+# export dies with UnicodeEncodeError AFTER training finishes.
 # Kills the plain `livekit-wakeword export` CLI too.
 for _stream in (sys.stdout, sys.stderr):
     _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -45,10 +45,10 @@ HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "alfred.yaml"
 # Bump for every retrain whose DATA changed: same-version rows in
 # pipeline_results.json are skipped as done. v1.0 = original sweep; v1.1 = SNR
-# fix, no game audio; v1.2 = game backgrounds + held-out negatives (2026-08-16);
+# fix, no game audio; v1.2 = game backgrounds + held-out negatives;
 # v1.3 = clean fraction is no longer digital silence (patch_pad_then_mix), a
-# DIFFERENT pad-then-mix recipe from the four v1.2 models left on disk by
-# 2026-08-17's aborted sweep.
+# DIFFERENT pad-then-mix recipe from the four v1.2 models an aborted sweep
+# left on disk.
 VERSION = "v1.3"
 
 STAGES = ["generate", "augment", "features", "train"]
@@ -105,8 +105,8 @@ def patch_seed(seed):
 
     Two models on BYTE-IDENTICAL features, same recipe, different seeds: clean
     64% vs 86%, noise ceiling 0.678 vs 0.220, +10 dB recall 14% vs 37%
-    (2026-08-17). Seed variance beats every effect chased here - sweep >=3 per
-    arm and compare distributions."""
+    Seed variance beats every effect chased here - sweep >=3 per arm and
+    compare distributions."""
     import random as _random
 
     import numpy as _np
@@ -140,7 +140,7 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
         mean NEGATIVE".
       * The clean fraction is background 35 dB DOWN, not removed. Returning the
         bare window reinstates the shortcut on 20.7% of positives and 24.7% of
-        adversarial negatives (2026-08-17, arm B)."""
+        adversarial negatives."""
     import soundfile as sf
     from livekit.wakeword.data import augment as _aug
 
@@ -212,7 +212,7 @@ def patch_augmentation(lo, hi, clean_p):
 
     original = _aug.AudioAugmentor.mix_with_background
     # If upstream renames the parameter the override still applies and quietly
-    # mixes at the new default. Verified against 0.2.1 (2026-08-16).
+    # mixes at the new default. Verified against 0.2.1.
     if "snr_db_range" not in inspect.signature(original).parameters:
         sys.exit(
             "livekit's mix_with_background no longer takes snr_db_range - "
@@ -405,8 +405,8 @@ def data_stamp_path(cfg):
 def write_data_stamp(cfg, prov):
     """Record, NEXT TO THE FEATURES, the settings that produced them - not the
     ones this invocation asked for. The two diverge the moment --from train
-    skips augment; on 2026-08-16 that trained medium-400k and dnn-medium on a
-    leftover -10..+15 dataset while the results file recorded [0, 20]."""
+    skips augment, which once trained two models on a leftover dataset while
+    the results file recorded another."""
     try:
         p = data_stamp_path(cfg)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -505,7 +505,7 @@ def run_data_stages(cfg, first):
 def artifact_stem(model_name, name, tag, seed):
     """The model name this run will write - the identity a re-run checks before
     believing a finished row. The seed is IN THE FILENAME: without it, three
-    seeds per cell overwrite one another (2026-08-17). One home because main()
+    seeds per cell overwrite one another. One home because main()
     must predict the name before run_variant builds it."""
     return f"{model_name}_{name}{f'_{tag}' if tag else ''}_s{seed}_{VERSION}"
 
@@ -565,7 +565,7 @@ def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
     # Two operating points: evaluate.py hardcodes threshold=0.5 (*_at_half),
     # find_best_threshold maximises recall subject to fpph <=
     # target_fp_per_hour. Neither is a K15 threshold - the parity gate
-    # (2026-08-13) showed livekit's scores do not transfer to openWakeWord's
+    # showed livekit's scores do not transfer to openWakeWord's
     # streaming runtime, so the deployed number comes from --wake-trials peaks.
     row.update(
         aut=round(metrics["aut"], 4),
@@ -619,8 +619,8 @@ def table(results, root, target_fpph):
     }
     live = list(scored.values())
     # find_best_threshold silently falls back to MAX BALANCED ACCURACY when no
-    # threshold fits target_fp_per_hour (2026-08-17: 16.3 and 13.4 FP/hr against
-    # a 0.2 target, still printed as "98.4% recall").
+    # threshold fits target_fp_per_hour (16 FP/hr against a 0.2 target once
+    # printed as "98.4% recall").
     missed = [k for k, r in scored.items() if r["optimal_fpph"] > target_fpph]
     if missed:
         print(
@@ -669,8 +669,8 @@ def table(results, root, target_fpph):
         f"\nFPPH is measured over {hrs} h of validation negatives. If "
         f"make_validation.py\nhas run, that is YOUR room and the number "
         f"means something; if it has not, it is\nlivekit's synthetic set, "
-        f"which could not tell three sizes apart in 2026-08-15's\nsweep "
-        f"(all three: 3 FPs, ~99.3% recall, AUT 0.0000)."
+        f"which once could not tell three sizes apart\n(all three: 3 FPs, "
+        f"~99.3% recall, AUT 0.0000)."
     )
     print(
         "\nNEITHER threshold column ships. The parity gate showed livekit's "
@@ -709,7 +709,7 @@ def main():
         default="generate",
         help="skip stages before this one",
     )
-    # (0, 20), NOT openWakeWord's (-10, 15): A/B'd 2026-08-16 on identical data
+    # (0, 20), NOT openWakeWord's (-10, 15): A/B'd on identical data
     # and refuted - noise ceiling 0.103 -> 0.678, separation 5.34x -> 1.07x,
     # threshold 0.10 -> 0.62, recall @+10 dB 23% -> 14%. oWW pairs that floor
     # with ~31,000 h of negatives; we have ~2,000 h.
@@ -804,7 +804,7 @@ def main():
     )
     # What is ALREADY trained, and under what: a `--tag snr-neg10` run on a
     # stale checkout once trained at (0, 20) and produced a duplicate of
-    # `medium` under a label that said otherwise (2026-08-16).
+    # `medium` under a label that said otherwise.
     if results_path.exists():
         prior = json.loads(results_path.read_text(encoding="utf-8"))
         rows = [
@@ -934,7 +934,7 @@ def main():
         key = f"{name}@{suffix}s{args.seed}"
         stem = artifact_stem(cfg0.model_name, name, args.tag, args.seed)
         # Done only if the MODEL is on disk under the name this run would
-        # write: 2026-08-17's sweep left twelve finished-looking rows whose
+        # write: one sweep left twelve finished-looking rows whose
         # artifacts had all overwritten one another.
         done = results.get(key)
         if done and "error" not in done:

@@ -1,19 +1,16 @@
 """Does Flux hear a command well enough to ACT on it?
 
     .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --raw-names     (the old keyterms)
     .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --no-keyterms   (no boost at all)
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --raw-tags     (SteamSpy's tag strings)
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --capitalized  (proper-noun case)
     .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --sweep         (fuzzyTitleThreshold)
 
 Live Deepgram, real money, non-deterministic. Windows SAPI speaks each
 utterance, so this measures the STT config, not tonight's room.
 Exit code is the number of failing probes.
 
-2026-08-14: keyterms were Steam's own strings, so Flux was taught ARMORED CORE
-VI FIRES OF RUBICON while the couch says "armored core six" - ARMORED CORSICS,
-ARMOR CORE 6, "thyroid core 6", and 11 of 12 launches missed.
+Keyterms are the spoken forms the couch says ("armored core 6"), not Steam's
+own strings (ARMORED CORE VI FIRES OF RUBICON): Flux is taught what it will
+hear.
 
 The bar is the gate's own path - grammar, slot, resolver - producing an appid,
 collection id or nav kind; a transcript that reads fine and resolves to
@@ -31,9 +28,10 @@ import wave
 from pathlib import Path
 
 from slopstation import config
-from slopstation.agent.speech import session_runtime
+from slopstation.agent.speech import audio
 from slopstation.agent.speech.grammar_gate import GrammarMatcher
-from slopstation.agent.tools import library, titles
+from slopstation.agent.speech.keyterms import stt_keyterms
+from slopstation.agent.tools import titles
 
 URL = "wss://api.deepgram.com/v2/listen"
 RATE = 16000
@@ -158,49 +156,6 @@ def act(matcher, resolve_game, resolve_coll, kind, heard):
     return str(slots["target"]) if intent == "Nav" else None
 
 
-def _capitalized(term):
-    """Deepgram documents proper-noun capitalization and says keyterm case
-    influences the transcript; keyterm_forms lowercases instead. The
-    2026-08-14 measurement that settled that moved case, numerals AND the
-    subtitle at once, so case alone was never tested. Free to try - the gate
-    and both resolvers run spoken_form first, so nothing downstream sees it."""
-    return " ".join(w[:1].upper() + w[1:] for w in term.split())
-
-
-def _pre_branch_tags(voice):
-    """The vocabulary before spoken_form and GENERIC_TERMS reached the tag
-    words: SteamSpy's own strings, 'Rogue-like' and 'Action' included."""
-    catalog = library.Catalog.load()
-    terms = ["hey jarvis"]
-    for name in session_runtime.load_titles(voice["keytermCount"], catalog.installed):
-        terms += titles.keyterm_forms(name)
-    terms += [
-        titles.spoken_form(c["name"]) for c in catalog.collections if c.get("name")
-    ]
-    terms += library.query_terms(session_runtime.QUERY_TERM_SLOTS)
-    return list(dict.fromkeys(terms))[: session_runtime.MAX_KEYTERMS]
-
-
-def keyterm_set(mode, voice):
-    """The lists worth comparing: what ships, what shipped before it, the two
-    open questions, none."""
-    if mode == "none":
-        return []
-    if mode == "raw":  # pre-fix: Steam's own strings
-        return (
-            ["hey jarvis"]
-            + session_runtime.load_titles(voice["keytermCount"])
-            + library.query_terms(session_runtime.QUERY_TERM_SLOTS)
-        )
-    if mode == "raw-tags":
-        return _pre_branch_tags(voice)
-    if mode == "capitalized":
-        return [
-            _capitalized(t) for t in session_runtime.stt_keyterms(voice, "hey jarvis")
-        ]
-    return session_runtime.stt_keyterms(voice, "hey jarvis")
-
-
 def hear_all(cases, voices, key, keyterms, tmp):
     """Transcribe every case once; the sweep reuses these, so a threshold
     comparison changes exactly one variable."""
@@ -263,22 +218,7 @@ def sweep(heard_rows, matcher, voice_cfg):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--raw-names",
-        action="store_true",
-        help="use the pre-fix keyterms (Steam's strings)",
-    )
     ap.add_argument("--no-keyterms", action="store_true")
-    ap.add_argument(
-        "--raw-tags",
-        action="store_true",
-        help="tag words as SteamSpy writes them (pre-spoken_form)",
-    )
-    ap.add_argument(
-        "--capitalized",
-        action="store_true",
-        help="the shipping forms, proper-noun capitalization",
-    )
     ap.add_argument(
         "--sweep",
         action="store_true",
@@ -287,17 +227,6 @@ def main():
     ap.add_argument("--voice", default=None, help="one SAPI voice instead of all")
     args = ap.parse_args()
 
-    mode = (
-        "raw"
-        if args.raw_names
-        else "none"
-        if args.no_keyterms
-        else "raw-tags"
-        if args.raw_tags
-        else "capitalized"
-        if args.capitalized
-        else "spoken"
-    )
     cfg = config.load()
     key = config.secrets().get("deepgramApiKey")
     if not config.real_key(key):
@@ -305,7 +234,12 @@ def main():
         return 1
 
     voice_cfg = cfg["voice"]
-    keyterms = keyterm_set(mode, voice_cfg)
+    mode = "no" if args.no_keyterms else "shipping"
+    keyterms = (
+        []
+        if args.no_keyterms
+        else stt_keyterms(voice_cfg, audio.wake_phrase(voice_cfg["wakeModel"]))
+    )
     resolve_game = titles.build_resolver(voice_cfg["fuzzyTitleThreshold"])
     resolve_coll = titles.build_collection_resolver(voice_cfg["fuzzyTitleThreshold"])
     if resolve_game is None:
