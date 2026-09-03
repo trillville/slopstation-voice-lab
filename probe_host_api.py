@@ -1,8 +1,8 @@
 """Does the -9999 stream death follow the MME host API, or the machine?
 
-    .venv\\Scripts\\python bench\\probe_host_api.py 7200      (2 hours)
-    .venv\\Scripts\\python bench\\probe_host_api.py 600 --dump run1.json
-    .venv\\Scripts\\python bench\\probe_host_api.py 60 --channels 6
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_host_api 7200      (2 hours)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_host_api 600 --dump run1.json
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_host_api 60 --channels 6
 
 Runs on the K15. STOP THE VOICE SUPERVISOR FIRST - it holds the same mic.
 
@@ -33,6 +33,7 @@ WDM-KS is exclusive-mode and will not open while the engine holds the endpoint.
 If flaps do NOT reproduce here, the agent's own stream churn is implicated,
 not the host API.
 """
+
 import argparse
 import json
 import sys
@@ -40,21 +41,17 @@ import threading
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]                      # .../slopstation
-sys.path.insert(0, str(ROOT / "k15"))
-
-from agent.speech import audio
-import cglib
+from slopstation import paths
+from slopstation.agent.speech import audio
 
 RATE = 16000
-CHUNK = 1280                                # audio.py's native 80 ms hop
-REOPEN_S = audio.RETRY_S                    # settle exactly as the agent does
-CHUNKS_PER_S = RATE / CHUNK                 # 12.5: what a real-time stream owes
-ZOMBIE_CHUNKS = 125                         # ~10 s of exact silence
-WARMUP_CHUNKS = 5                           # a stream may hand back zeros
+CHUNK = 1280  # audio.py's native 80 ms hop
+REOPEN_S = audio.RETRY_S  # settle exactly as the agent does
+CHUNKS_PER_S = RATE / CHUNK  # 12.5: what a real-time stream owes
+ZOMBIE_CHUNKS = 125  # ~10 s of exact silence
+WARMUP_CHUNKS = 5  # a stream may hand back zeros
 #                                             while its buffer primes
-PACE_SAMPLE = 50                            # ~4 s before timing is judged, so
+PACE_SAMPLE = 50  # ~4 s before timing is judged, so
 #                                             a warm-buffer burst can't convict
 PROGRESS_S = 300
 # WDM-KS is deliberately absent - see the header's format matrix.
@@ -65,16 +62,24 @@ def resolve_on_api(pa, fragment, api_name):
     """audio.resolve_device's name-fragment rule, narrowed to ONE host API.
 
     Its own copy: resolve_device cannot select a host API."""
-    api_idx = next((i for i in range(pa.get_host_api_count())
-                    if pa.get_host_api_info_by_index(i)["name"] == api_name),
-                   None)
+    api_idx = next(
+        (
+            i
+            for i in range(pa.get_host_api_count())
+            if pa.get_host_api_info_by_index(i)["name"] == api_name
+        ),
+        None,
+    )
     if api_idx is None:
         return None, None
     frag = fragment.lower()
     for i in range(pa.get_device_count()):
         d = pa.get_device_info_by_index(i)
-        if (d["hostApi"] == api_idx and d["maxInputChannels"]
-                and frag in d["name"].lower()):
+        if (
+            d["hostApi"] == api_idx
+            and d["maxInputChannels"]
+            and frag in d["name"].lower()
+        ):
             return i, d["name"]
     return None, None
 
@@ -86,20 +91,26 @@ class Candidate:
         self.api, self.index, self.name = api, index, name
         self.stream = None
         self.chunks = 0
-        self.deaths = []                    # [{at, err}]
-        self.zombies = []                   # [{at, chunks}]
+        self.deaths = []  # [{at, err}]
+        self.zombies = []  # [{at, chunks}]
         self.reopen_fails = 0
         self.deaf_s = 0.0
         self.silent = 0
-        self.retired = None                 # reason, once it stops being soaked
+        self.retired = None  # reason, once it stops being soaked
         self.opened_at = None
         self.since_open = 0
 
     def open(self, pa, channels):
         import pyaudio
-        self.stream = pa.open(format=pyaudio.paInt16, channels=channels,
-                              rate=RATE, input=True, frames_per_buffer=CHUNK,
-                              input_device_index=self.index)
+
+        self.stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=channels,
+            rate=RATE,
+            input=True,
+            frames_per_buffer=CHUNK,
+            input_device_index=self.index,
+        )
         self.opened_at, self.since_open = time.monotonic(), 0
 
     def free_running(self):
@@ -115,17 +126,21 @@ class Candidate:
         # pace itself. DirectSound at 6 ch free-ran at ~125 chunks/s on
         # 2026-08-15; MME and WASAPI paced.
         return {
-            "host_api": self.api, "index": self.index, "device": self.name,
+            "host_api": self.api,
+            "index": self.index,
+            "device": self.name,
             "chunks": self.chunks,
             "chunks_per_s": round(self.chunks / heard, 1),
             "paces": abs(self.chunks / heard - CHUNKS_PER_S) < 2.0,
             "retired": self.retired,
-            "deaths": len(self.deaths), "zombies": len(self.zombies),
+            "deaths": len(self.deaths),
+            "zombies": len(self.zombies),
             "reopen_fails": self.reopen_fails,
             "deaf_s": round(self.deaf_s, 1),
             "uptime_pct": round(100.0 * heard / elapsed, 2) if elapsed else 0.0,
             "per_hour": round(len(self.deaths) / max(elapsed / 3600, 1e-9), 2),
-            "death_log": self.deaths, "zombie_log": self.zombies,
+            "death_log": self.deaths,
+            "zombie_log": self.zombies,
         }
 
 
@@ -144,12 +159,14 @@ def soak(cand, pa, channels, stop):
                 return
             try:
                 cand.open(pa, channels)
-                print(f"  [{stamp()}] {cand.api}: reopened "
-                      f"after {time.monotonic() - t0:.1f}s deaf", flush=True)
+                print(
+                    f"  [{stamp()}] {cand.api}: reopened "
+                    f"after {time.monotonic() - t0:.1f}s deaf",
+                    flush=True,
+                )
             except Exception as e:
                 cand.reopen_fails += 1
-                print(f"  [{stamp()}] {cand.api}: REOPEN FAILED - {e}",
-                      flush=True)
+                print(f"  [{stamp()}] {cand.api}: REOPEN FAILED - {e}", flush=True)
             finally:
                 cand.deaf_s += time.monotonic() - t0
             continue
@@ -168,10 +185,10 @@ def soak(cand, pa, channels, stop):
         # but both delivered ~3 million chunks/s against 12.5 owed. Retire
         # rather than reopen - a free-runner mints an event a second.
         if cand.since_open > PACE_SAMPLE and cand.free_running():
-            cand.retired = ("free-running - never paced to real time, so it "
-                            "was never capturing")
-            print(f"  [{stamp()}] {cand.api}: RETIRED - {cand.retired}",
-                  flush=True)
+            cand.retired = (
+                "free-running - never paced to real time, so it was never capturing"
+            )
+            print(f"  [{stamp()}] {cand.api}: RETIRED - {cand.retired}", flush=True)
             audio.close_stream_quietly(cand.stream)
             cand.stream = None
             return
@@ -183,8 +200,11 @@ def soak(cand, pa, channels, stop):
         if cand.silent < ZOMBIE_CHUNKS:
             continue
         cand.zombies.append({"at": stamp(), "chunks": cand.silent})
-        print(f"  [{stamp()}] {cand.api}: ZOMBIE - {cand.silent} chunks "
-              f"of exact silence, forcing a reopen", flush=True)
+        print(
+            f"  [{stamp()}] {cand.api}: ZOMBIE - {cand.silent} chunks "
+            f"of exact silence, forcing a reopen",
+            flush=True,
+        )
         cand.silent = 0
         audio.close_stream_quietly(cand.stream)
         cand.stream = None
@@ -192,21 +212,31 @@ def soak(cand, pa, channels, stop):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Soak MME and WASAPI against the same mic, concurrently.")
+        description="Soak MME and WASAPI against the same mic, concurrently."
+    )
     ap.add_argument("seconds", nargs="?", type=int, default=7200)
-    ap.add_argument("--channels", type=int, default=6,
-                    help="6 = the array's native format and the only width "
-                         "every candidate accepts (default); 1 = the width "
-                         "the agent runs today, MME/DirectSound only")
-    ap.add_argument("--dump", metavar="PATH",
-                    help="write the tally as JSON for comparison across runs")
+    ap.add_argument(
+        "--channels",
+        type=int,
+        default=6,
+        help="6 = the array's native format and the only width "
+        "every candidate accepts (default); 1 = the width "
+        "the agent runs today, MME/DirectSound only",
+    )
+    ap.add_argument(
+        "--dump",
+        metavar="PATH",
+        help="write the tally as JSON for comparison across runs",
+    )
     args = ap.parse_args()
 
-    voice = json.loads((cglib.BASE / "config.json")
-                       .read_text(encoding="utf-8-sig"))["voice"]
+    voice = json.loads((paths.HOME / "config.json").read_text(encoding="utf-8-sig"))[
+        "voice"
+    ]
     frag = voice["inputDeviceName"]
 
     import pyaudio
+
     pa = pyaudio.PyAudio()
     print(f"soaking {frag!r} for {args.seconds}s at {args.channels} ch\n")
 
@@ -222,21 +252,26 @@ def main():
         except Exception as e:
             # Not a fault: at --channels 1 this is WASAPI declining anything
             # but the engine format.
-            print(f"  {api}: index {idx} would not open at "
-                  f"{args.channels} ch - {e}")
+            print(f"  {api}: index {idx} would not open at {args.channels} ch - {e}")
             continue
         print(f"  {api}: index {idx} open ({name})")
         cands.append(c)
 
     if len(cands) < 2:
-        print("\nfewer than two candidates opened - there is nothing to "
-              "compare, and a one-sided count is not evidence.")
+        print(
+            "\nfewer than two candidates opened - there is nothing to "
+            "compare, and a one-sided count is not evidence."
+        )
         pa.terminate()
         return 1
 
     stop = threading.Event()
-    threads = [threading.Thread(target=soak, args=(c, pa, args.channels, stop),
-                                daemon=True, name=c.api) for c in cands]
+    threads = [
+        threading.Thread(
+            target=soak, args=(c, pa, args.channels, stop), daemon=True, name=c.api
+        )
+        for c in cands
+    ]
     t0 = time.monotonic()
     for t in threads:
         t.start()
@@ -259,10 +294,13 @@ def main():
                 continue
             next_tick += PROGRESS_S
             mins = (time.monotonic() - t0) / 60
-            tally = " | ".join(f"{c.api} {len(c.deaths)}d/{len(c.zombies)}z"
-                               for c in cands)
-            print(f"  [{stamp()}] {mins:.0f} / {args.seconds / 60:.0f} min - "
-                  f"{tally}", flush=True)
+            tally = " | ".join(
+                f"{c.api} {len(c.deaths)}d/{len(c.zombies)}z" for c in cands
+            )
+            print(
+                f"  [{stamp()}] {mins:.0f} / {args.seconds / 60:.0f} min - {tally}",
+                flush=True,
+            )
     except KeyboardInterrupt:
         print("\ninterrupted - reporting what was measured so far")
     stop.set()
@@ -275,39 +313,54 @@ def main():
             audio.close_stream_quietly(c.stream)
     pa.terminate()
 
-    out = {"fragment": frag, "channels": args.channels,
-           "elapsed_s": round(elapsed, 1),
-           "candidates": [c.summary(elapsed) for c in cands]}
-    print(f"\n{'host API':<22}{'deaths':>7}{'zombies':>8}{'reopen!':>8}"
-          f"{'deaf s':>8}{'uptime':>8}{'per hr':>8}{'chunk/s':>14}")
+    out = {
+        "fragment": frag,
+        "channels": args.channels,
+        "elapsed_s": round(elapsed, 1),
+        "candidates": [c.summary(elapsed) for c in cands],
+    }
+    print(
+        f"\n{'host API':<22}{'deaths':>7}{'zombies':>8}{'reopen!':>8}"
+        f"{'deaf s':>8}{'uptime':>8}{'per hr':>8}{'chunk/s':>14}"
+    )
     for s in out["candidates"]:
-        print(f"{s['host_api']:<22}{s['deaths']:>7}{s['zombies']:>8}"
-              f"{s['reopen_fails']:>8}{s['deaf_s']:>8}"
-              f"{s['uptime_pct']:>7}%{s['per_hour']:>8}"
-              f"{s['chunks_per_s']:>14,.1f}")
+        print(
+            f"{s['host_api']:<22}{s['deaths']:>7}{s['zombies']:>8}"
+            f"{s['reopen_fails']:>8}{s['deaf_s']:>8}"
+            f"{s['uptime_pct']:>7}%{s['per_hour']:>8}"
+            f"{s['chunks_per_s']:>14,.1f}"
+        )
         if s["retired"]:
             print(f"{'':<22}retired - {s['retired']}")
         elif not s["paces"]:
-            print(f"{'':<22}NOT REAL TIME ({CHUNKS_PER_S:.1f} owed) - "
-                  f"this stream was not capturing")
+            print(
+                f"{'':<22}NOT REAL TIME ({CHUNKS_PER_S:.1f} owed) - "
+                f"this stream was not capturing"
+            )
 
     live = [s for s in out["candidates"] if not s["retired"]]
     total = sum(s["deaths"] + s["zombies"] for s in live)
     hours = elapsed / 3600
     if len(live) < 2:
-        print(f"\nOnly {len(live)} candidate(s) survived the run - there is no "
-              f"comparison left to draw, whatever the counts above say.")
+        print(
+            f"\nOnly {len(live)} candidate(s) survived the run - there is no "
+            f"comparison left to draw, whatever the counts above say."
+        )
     elif not total:
         # The logged rate is ~2/h, so silence over a short run is expected
         # even when MME is guilty.
-        print(f"\nNo events in {hours:.1f}h. At the ~2/h logged on 2026-08-15 "
-              f"that is unsurprising below ~2h and settles nothing - run it "
-              f"longer, or run it while the agent is up to test the other "
-              f"hypothesis.")
+        print(
+            f"\nNo events in {hours:.1f}h. At the ~2/h logged on 2026-08-15 "
+            f"that is unsurprising below ~2h and settles nothing - run it "
+            f"longer, or run it while the agent is up to test the other "
+            f"hypothesis."
+        )
     else:
-        print(f"\n{total} event(s) in {hours:.1f}h. A verdict needs the counts "
-              f"to be lopsided AND the run long enough to have caught a "
-              f"cluster - one death each is a coin flip, not a finding.")
+        print(
+            f"\n{total} event(s) in {hours:.1f}h. A verdict needs the counts "
+            f"to be lopsided AND the run long enough to have caught a "
+            f"cluster - one death each is a coin flip, not a finding."
+        )
 
     if args.dump:
         Path(args.dump).write_text(json.dumps(out, indent=2), encoding="utf-8")

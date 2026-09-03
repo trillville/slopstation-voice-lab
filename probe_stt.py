@@ -1,11 +1,11 @@
 """Does Flux hear a command well enough to ACT on it?
 
-    .venv\\Scripts\\python bench\\probe_stt.py
-    .venv\\Scripts\\python bench\\probe_stt.py --raw-names     (the old keyterms)
-    .venv\\Scripts\\python bench\\probe_stt.py --no-keyterms   (no boost at all)
-    .venv\\Scripts\\python bench\\probe_stt.py --raw-tags     (SteamSpy's tag strings)
-    .venv\\Scripts\\python bench\\probe_stt.py --capitalized  (proper-noun case)
-    .venv\\Scripts\\python bench\\probe_stt.py --sweep         (fuzzyTitleThreshold)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --raw-names     (the old keyterms)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --no-keyterms   (no boost at all)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --raw-tags     (SteamSpy's tag strings)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --capitalized  (proper-noun case)
+    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --sweep         (fuzzyTitleThreshold)
 
 Live Deepgram, real money, non-deterministic. Windows SAPI speaks each
 utterance, so this measures the STT config, not tonight's room.
@@ -20,6 +20,7 @@ collection id or nav kind; a transcript that reads fine and resolves to
 nothing is a failure. Negatives are titles the user OWNS but has not
 installed: a loose threshold launches the wrong game.
 """
+
 import argparse
 import asyncio
 import json
@@ -29,19 +30,14 @@ import tempfile
 import wave
 from pathlib import Path
 
-# Path setup inline: this probe drives the STT socket, not the assistant.
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2] / "k15"))
-
-import cglib
-from agent.tools import library
-from agent.speech import session_runtime
-from agent.tools import titles
-from agent.speech.grammar_gate import GrammarMatcher
+from slopstation import cglib
+from slopstation.agent.speech import session_runtime
+from slopstation.agent.speech.grammar_gate import GrammarMatcher
+from slopstation.agent.tools import library, titles
 
 URL = "wss://api.deepgram.com/v2/listen"
 RATE = 16000
-CHUNK = 3200                                    # 100 ms of s16 mono
+CHUNK = 3200  # 100 ms of s16 mono
 
 # (utterance, kind, expected). kind picks which resolution path must succeed;
 # expected is matched case-insensitively, or None for a negative that must
@@ -86,8 +82,9 @@ def synth(voice, text, path):
         f"$s.SetOutputToWaveFile('{path}', $f); "
         f"$s.Speak('{text}'); $s.Dispose()"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True,
-                   capture_output=True)
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps], check=True, capture_output=True
+    )
     with wave.open(str(path)) as w:
         assert w.getframerate() == RATE and w.getnchannels() == 1
         return w.readframes(w.getnframes())
@@ -97,25 +94,35 @@ async def transcribe(pcm, api_key, keyterms):
     """One utterance through Flux; returns the EndOfTurn transcript. Trailing
     silence is what ENDS the turn - Flux is a turn model, not stream-to-text -
     so without it the socket just waits."""
-    import websockets
     from urllib.parse import urlencode
-    params = ["model=flux-general-en", f"sample_rate={RATE}",
-              "encoding=linear16", "numerals=true", "mip_opt_out=true"]
+
+    import websockets
+
+    params = [
+        "model=flux-general-en",
+        f"sample_rate={RATE}",
+        "encoding=linear16",
+        "numerals=true",
+        "mip_opt_out=true",
+    ]
     for k in keyterms:
         params.append(urlencode({"keyterm": k}))
     url = f"{URL}?{'&'.join(params)}"
 
     async with websockets.connect(
-            url, additional_headers={"Authorization": f"Token {api_key}"}) as ws:
+        url, additional_headers={"Authorization": f"Token {api_key}"}
+    ) as ws:
+
         async def feed():
             for i in range(0, len(pcm), CHUNK):
-                await ws.send(pcm[i:i + CHUNK])
-                await asyncio.sleep(0.01)       # pace it like a live mic
+                await ws.send(pcm[i : i + CHUNK])
+                await asyncio.sleep(0.01)  # pace it like a live mic
             # Keep the silence COMING: Flux ends a turn on the audio it
             # receives, not on a gap in delivery.
             while True:
                 await ws.send(b"\x00" * CHUNK)
                 await asyncio.sleep(0.05)
+
         send_task = asyncio.create_task(feed())
         try:
             async with asyncio.timeout(45):
@@ -137,11 +144,17 @@ def act(matcher, resolve_game, resolve_coll, kind, heard):
         return None
     intent, slots = m
     if kind == "game":
-        return (resolve_game(str(slots["game"]))[1]
-                if intent == "PlayGame" and resolve_game else None)
+        return (
+            resolve_game(str(slots["game"]))[1]
+            if intent == "PlayGame" and resolve_game
+            else None
+        )
     if kind == "collection":
-        return (resolve_coll(str(slots["collection"]))[1]
-                if intent == "ShowCollection" and resolve_coll else None)
+        return (
+            resolve_coll(str(slots["collection"]))[1]
+            if intent == "ShowCollection" and resolve_coll
+            else None
+        )
     return str(slots["target"]) if intent == "Nav" else None
 
 
@@ -161,10 +174,11 @@ def _pre_branch_tags(voice):
     terms = ["hey jarvis"]
     for name in session_runtime.load_titles(voice["keytermCount"], catalog.installed):
         terms += titles.keyterm_forms(name)
-    terms += [titles.spoken_form(c["name"]) for c in catalog.collections
-              if c.get("name")]
+    terms += [
+        titles.spoken_form(c["name"]) for c in catalog.collections if c.get("name")
+    ]
     terms += library.query_terms(session_runtime.QUERY_TERM_SLOTS)
-    return list(dict.fromkeys(terms))[:session_runtime.MAX_KEYTERMS]
+    return list(dict.fromkeys(terms))[: session_runtime.MAX_KEYTERMS]
 
 
 def keyterm_set(mode, voice):
@@ -172,14 +186,18 @@ def keyterm_set(mode, voice):
     open questions, none."""
     if mode == "none":
         return []
-    if mode == "raw":                           # pre-fix: Steam's own strings
-        return (["hey jarvis"] + session_runtime.load_titles(voice["keytermCount"])
-                + library.query_terms(session_runtime.QUERY_TERM_SLOTS))
+    if mode == "raw":  # pre-fix: Steam's own strings
+        return (
+            ["hey jarvis"]
+            + session_runtime.load_titles(voice["keytermCount"])
+            + library.query_terms(session_runtime.QUERY_TERM_SLOTS)
+        )
     if mode == "raw-tags":
         return _pre_branch_tags(voice)
     if mode == "capitalized":
-        return [_capitalized(t) for t in
-                session_runtime.stt_keyterms(voice, "hey jarvis")]
+        return [
+            _capitalized(t) for t in session_runtime.stt_keyterms(voice, "hey jarvis")
+        ]
     return session_runtime.stt_keyterms(voice, "hey jarvis")
 
 
@@ -198,11 +216,14 @@ def hear_all(cases, voices, key, keyterms, tmp):
 
 def report(heard_rows, matcher, resolve_game, resolve_coll):
     fails = 0
-    by_kind = {}
+    by_kind: dict = {}
     for voice, spoken, kind, expect, heard in heard_rows:
         got = act(matcher, resolve_game, resolve_coll, kind, heard)
-        ok = (got is None) if expect is None else (
-            got is not None and expect.lower() in str(got).lower())
+        ok = (
+            (got is None)
+            if expect is None
+            else (got is not None and expect.lower() in str(got).lower())
+        )
         fails += not ok
         tally = by_kind.setdefault("negative" if expect is None else kind, [0, 0])
         tally[0] += ok
@@ -234,28 +255,49 @@ def sweep(heard_rows, matcher, voice_cfg):
                 total += 1
                 hits += got is not None and expect.lower() in str(got).lower()
         mark = "  <-- unsafe" if false else ""
-        print(f"{th:>7}  {hits:>4}/{total:<4}  {false:>12}   "
-              f"{', '.join(bad)[:60]}{mark}")
+        print(
+            f"{th:>7}  {hits:>4}/{total:<4}  {false:>12}   {', '.join(bad)[:60]}{mark}"
+        )
     print(f"\nshipping fuzzyTitleThreshold = {voice_cfg['fuzzyTitleThreshold']}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw-names", action="store_true",
-                    help="use the pre-fix keyterms (Steam's strings)")
+    ap.add_argument(
+        "--raw-names",
+        action="store_true",
+        help="use the pre-fix keyterms (Steam's strings)",
+    )
     ap.add_argument("--no-keyterms", action="store_true")
-    ap.add_argument("--raw-tags", action="store_true",
-                    help="tag words as SteamSpy writes them (pre-spoken_form)")
-    ap.add_argument("--capitalized", action="store_true",
-                    help="the shipping forms, proper-noun capitalization")
-    ap.add_argument("--sweep", action="store_true",
-                    help="vary fuzzyTitleThreshold over the same transcripts")
+    ap.add_argument(
+        "--raw-tags",
+        action="store_true",
+        help="tag words as SteamSpy writes them (pre-spoken_form)",
+    )
+    ap.add_argument(
+        "--capitalized",
+        action="store_true",
+        help="the shipping forms, proper-noun capitalization",
+    )
+    ap.add_argument(
+        "--sweep",
+        action="store_true",
+        help="vary fuzzyTitleThreshold over the same transcripts",
+    )
     ap.add_argument("--voice", default=None, help="one SAPI voice instead of all")
     args = ap.parse_args()
 
-    mode = ("raw" if args.raw_names else "none" if args.no_keyterms
-            else "raw-tags" if args.raw_tags
-            else "capitalized" if args.capitalized else "spoken")
+    mode = (
+        "raw"
+        if args.raw_names
+        else "none"
+        if args.no_keyterms
+        else "raw-tags"
+        if args.raw_tags
+        else "capitalized"
+        if args.capitalized
+        else "spoken"
+    )
     cfg = cglib.load_config()
     key = cglib.load_secrets().get("deepgramApiKey")
     if not cglib.real_key(key):
@@ -267,7 +309,7 @@ def main():
     resolve_game = titles.build_resolver(voice_cfg["fuzzyTitleThreshold"])
     resolve_coll = titles.build_collection_resolver(voice_cfg["fuzzyTitleThreshold"])
     if resolve_game is None:
-        print("no installed titles indexed - run library.py sync")
+        print("no installed titles indexed - run library sync")
         return 1
     # The gate matches the grammar FIRST and resolves only the slot, so the
     # resolver never sees "play " or the trailing period.
@@ -275,8 +317,10 @@ def main():
 
     voices = [args.voice] if args.voice else VOICES
     cases = [c for c in CASES if c[1] == "game"] if args.sweep else CASES
-    print(f"keyterms: {mode} ({len(keyterms)} terms) | voices: {len(voices)} "
-          f"| cases: {len(cases)}\n")
+    print(
+        f"keyterms: {mode} ({len(keyterms)} terms) | voices: {len(voices)} "
+        f"| cases: {len(cases)}\n"
+    )
 
     tmp = Path(tempfile.mkdtemp())
     rows = hear_all(cases, voices, key, keyterms, tmp)

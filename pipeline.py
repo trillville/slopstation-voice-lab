@@ -14,6 +14,7 @@ the opposite case - a talker reaches the mic 10-20 dB BELOW TV dialogue.
 Data and venv - 16.5 GB of ACAV100M features, MUSAN, the RIRs - live under
 --root (default C:\\Users\\tillm\\wake), out of the repo.
 """
+
 import argparse
 import json
 import random
@@ -26,7 +27,6 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-
 from livekit.wakeword.config import WakeWordConfig
 from livekit.wakeword.data.augment import run_augment
 from livekit.wakeword.data.features import run_extraction
@@ -59,9 +59,16 @@ CONTINUATIONS = False
 # What a VARIANT may override. Anything else changes what
 # generate/augment/features produce, and those run ONCE and are shared - a
 # variant touching them would train on the previous variant's data.
-TRAINING_ONLY = {"model", "steps", "learning_rate", "weight_decay",
-                 "label_smoothing", "max_negative_weight", "target_fp_per_hour",
-                 "batch_n_per_class"}
+TRAINING_ONLY = {
+    "model",
+    "steps",
+    "learning_rate",
+    "weight_decay",
+    "label_smoothing",
+    "max_negative_weight",
+    "target_fp_per_hour",
+    "batch_n_per_class",
+}
 
 
 def check_not_compounding(lo, rounds):
@@ -75,7 +82,8 @@ def check_not_compounding(lo, rounds):
             f"so {rounds} rounds from a {lo:+g} dB floor lands far below it and "
             f"teaches the model to fire on noise.\n"
             f"Pick one: keep rounds at 1 (what alfred.yaml ships), or raise "
-            f"--snr's floor to +5 or above.")
+            f"--snr's floor to +5 or above."
+        )
 
 
 def patch_rir(p):
@@ -83,6 +91,7 @@ def patch_rir(p):
     site - apply_rir(audio) is invoked with no p. 270 impulse responses are on
     disk; an empty rir_files list makes apply_rir a silent no-op."""
     from livekit.wakeword.data import augment as _aug
+
     original = _aug.AudioAugmentor.apply_rir
 
     def with_p(self, audio, p_override=p):
@@ -102,6 +111,7 @@ def patch_seed(seed):
 
     import numpy as _np
     import torch
+
     _random.seed(seed)
     _np.random.seed(seed)
     torch.manual_seed(seed)
@@ -144,7 +154,7 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
         if len(bg) < n:
             bg = np.tile(bg, (n // len(bg)) + 1)
         s = random.randint(0, max(0, len(bg) - n))
-        return bg[s:s + n]
+        return bg[s : s + n]
 
     def padded_mix(self, audio, snr_db_range=(lo, hi)):
         if not self.background_files:
@@ -153,14 +163,17 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
         win = np.zeros(target_len, dtype=np.float32)
         end = target_len - random.randint(0, jitter)
         start = max(0, end - len(audio))
-        win[start:end] = audio[max(0, len(audio) - (end - start)):][:end - start]
+        win[start:end] = audio[max(0, len(audio) - (end - start)) :][: end - start]
         # The clean fraction is a HIGH SNR, not a bypass (docstring, third
         # bullet): returning `win` here rebuilds the shortcut.
-        snr_db = (CLEAN_SNR_DB if clean_p and random.random() < clean_p
-                  else random.uniform(*snr_db_range))
+        snr_db = (
+            CLEAN_SNR_DB
+            if clean_p and random.random() < clean_p
+            else random.uniform(*snr_db_range)
+        )
         bg = bg_window(self, target_len)
-        clip_power = float(np.mean(audio ** 2)) + 1e-8      # NOT the window
-        bg_power = float(np.mean(bg ** 2)) + 1e-8
+        clip_power = float(np.mean(audio**2)) + 1e-8  # NOT the window
+        bg_power = float(np.mean(bg**2)) + 1e-8
         scale = np.sqrt(clip_power / (bg_power * 10 ** (snr_db / 10)))
         return (win + scale * bg).astype(np.float32)
 
@@ -169,14 +182,20 @@ def patch_pad_then_mix(lo, hi, clean_p, target_len, jitter=3200):
     original_align = _aug.align_clip_to_end
 
     def align_noop(audio, target_length, **kw):
-        return audio if len(audio) == target_length else original_align(
-            audio, target_length, **kw)
+        return (
+            audio
+            if len(audio) == target_length
+            else original_align(audio, target_length, **kw)
+        )
 
     _aug.AudioAugmentor.mix_with_background = padded_mix
     _aug.align_clip_to_end = align_noop
-    print(f"[patch] pad-then-mix: {target_len / 16000:.1f}s window built from "
-          f"background, clip written into it (no zero pad), "
-          f"{clean_p:.0%} at +{CLEAN_SNR_DB:g} dB instead of clean", flush=True)
+    print(
+        f"[patch] pad-then-mix: {target_len / 16000:.1f}s window built from "
+        f"background, clip written into it (no zero pad), "
+        f"{clean_p:.0%} at +{CLEAN_SNR_DB:g} dB instead of clean",
+        flush=True,
+    )
 
 
 def patch_augmentation(lo, hi, clean_p):
@@ -190,23 +209,29 @@ def patch_augmentation(lo, hi, clean_p):
     import inspect
 
     from livekit.wakeword.data import augment as _aug
+
     original = _aug.AudioAugmentor.mix_with_background
     # If upstream renames the parameter the override still applies and quietly
     # mixes at the new default. Verified against 0.2.1 (2026-08-16).
     if "snr_db_range" not in inspect.signature(original).parameters:
-        sys.exit("livekit's mix_with_background no longer takes snr_db_range - "
-                 "the SNR patch would silently do nothing. Re-read "
-                 "data/augment.py and update patch_augmentation before "
-                 "training anything.")
+        sys.exit(
+            "livekit's mix_with_background no longer takes snr_db_range - "
+            "the SNR patch would silently do nothing. Re-read "
+            "data/augment.py and update patch_augmentation before "
+            "training anything."
+        )
 
     def widened(self, audio, snr_db_range=(lo, hi)):
         if clean_p and random.random() < clean_p:
-            return audio                # the clean quarter, oWW-style
+            return audio  # the clean quarter, oWW-style
         return original(self, audio, snr_db_range)
 
     _aug.AudioAugmentor.mix_with_background = widened
-    print(f"[patch] background SNR {lo:+g}..{hi:+g} dB, {clean_p:.0%} left clean "
-          f"(livekit default: +5..+15 dB, 0% clean)", flush=True)
+    print(
+        f"[patch] background SNR {lo:+g}..{hi:+g} dB, {clean_p:.0%} left clean "
+        f"(livekit default: +5..+15 dB, 0% clean)",
+        flush=True,
+    )
 
 
 def patch_adversarial_from_bare(bare):
@@ -221,14 +246,18 @@ def patch_adversarial_from_bare(bare):
     "hey alfred" / "hey al fred" only, so continuation forms exist as positives
     and nothing else."""
     from livekit.wakeword.data import generate as _gen
+
     original = _gen.generate_adversarial_phrases
 
     def bare_only(target_phrases=None, **kw):
         return original(target_phrases=list(bare), **kw)
 
     _gen.generate_adversarial_phrases = bare_only
-    print(f"[patch] adversarial negatives derived from {list(bare)} only - "
-          f"continuation forms are positives and never negatives", flush=True)
+    print(
+        f"[patch] adversarial negatives derived from {list(bare)} only - "
+        f"continuation forms are positives and never negatives",
+        flush=True,
+    )
 
 
 def merge(base, over):
@@ -236,8 +265,11 @@ def merge(base, over):
     restating model_type."""
     out = dict(base)
     for k, v in over.items():
-        out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(
-            out.get(k), dict) else v
+        out[k] = (
+            merge(out[k], v)
+            if isinstance(v, dict) and isinstance(out.get(k), dict)
+            else v
+        )
     return out
 
 
@@ -255,7 +287,8 @@ def variant_specs():
                 f"and are shared by every variant, so this one would train on "
                 f"another\nvariant's data and the comparison would be a lie. "
                 f"Move it into the base config\nand re-run the whole pipeline "
-                f"instead. Overridable: {sorted(TRAINING_ONLY)}")
+                f"instead. Overridable: {sorted(TRAINING_ONLY)}"
+            )
     return specs
 
 
@@ -271,9 +304,11 @@ def load_config(root, size=None, over=None):
     raw["output_dir"] = str(root / "output")
     aug = raw.setdefault("augmentation", {})
     for key in ("background_paths", "rir_paths"):
-        aug[key] = [p if Path(p).is_absolute() else str((root / p).resolve())
-                    for p in aug.get(key, [])]
-    raw.pop("variants", None)               # ours, not livekit's schema
+        aug[key] = [
+            p if Path(p).is_absolute() else str((root / p).resolve())
+            for p in aug.get(key, [])
+        ]
+    raw.pop("variants", None)  # ours, not livekit's schema
     cont = raw.pop("continuation_phrases", None) or []
     if CONTINUATIONS and cont:
         # Weighted by repetition: piper's sampler is
@@ -289,16 +324,19 @@ def load_config(root, size=None, over=None):
     cfg = WakeWordConfig(**raw)
     for d in cfg.augmentation.background_paths + cfg.augmentation.rir_paths:
         if not Path(d).is_dir():
-            sys.exit(f"augmentation path does not exist: {d}\n"
-                     f"Paths in alfred.yaml are relative to --root ({root}).")
+            sys.exit(
+                f"augmentation path does not exist: {d}\n"
+                f"Paths in alfred.yaml are relative to --root ({root})."
+            )
     return cfg
 
 
 def provenance(cfg, snr, clean_p):
     """Which data produced the numbers - above all the augmentation settings,
     now that the SNR is patched."""
-    bg = [p for d in cfg.augmentation.background_paths
-          for p in Path(d).glob("**/*.wav")]
+    bg = [
+        p for d in cfg.augmentation.background_paths for p in Path(d).glob("**/*.wav")
+    ]
     return {
         "target_phrases": cfg.target_phrases,
         "custom_negative_phrases": cfg.custom_negative_phrases,
@@ -309,8 +347,10 @@ def provenance(cfg, snr, clean_p):
         "snr_db_range": list(snr),
         "clean_fraction": clean_p,
         "background_wavs": len(bg),
-        "by_folder": {d: sum(1 for p in bg if p.parent.name == d)
-                      for d in sorted({p.parent.name for p in bg})},
+        "by_folder": {
+            d: sum(1 for p in bg if p.parent.name == d)
+            for d in sorted({p.parent.name for p in bg})
+        },
     }
 
 
@@ -318,6 +358,7 @@ def tool_versions():
     """Versions and the code commit, stamped into every result row: the
     monkeypatches make results a function of THIS code, not just the config."""
     import importlib.metadata as im
+
     out = {}
     for pkg in ("livekit-wakeword", "openwakeword", "torch"):
         try:
@@ -325,8 +366,12 @@ def tool_versions():
         except Exception:
             out[pkg] = None
     try:
-        r = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short",
-                            "HEAD"], capture_output=True, text=True, timeout=10)
+        r = subprocess.run(
+            ["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         out["pipeline_commit"] = r.stdout.strip() or None
     except Exception:
         out["pipeline_commit"] = None
@@ -335,6 +380,7 @@ def tool_versions():
 
 def param_count(pt_path):
     import torch
+
     sd = torch.load(pt_path, map_location="cpu", weights_only=True)
     return sum(t.numel() for t in sd.values() if hasattr(t, "numel"))
 
@@ -398,6 +444,7 @@ def check_positive_lengths(cfg, sample=2000):
     jitter and cropped from the FRONT if it does not fit, so a long
     continuation loses "hey alfred" and carries no wake word."""
     import soundfile as sf
+
     budget = cfg.augmentation.clip_duration - 0.2
     files = sorted((Path(cfg.model_output_dir) / "positive_train").glob("*.wav"))
     if not files:
@@ -405,16 +452,22 @@ def check_positive_lengths(cfg, sample=2000):
     step = max(1, len(files) // sample)
     durs = np.array([sf.info(str(p)).duration for p in files[::step]])
     over = float((durs > budget).mean())
-    print(f"positives   {len(files)} clips, median {np.median(durs):.2f}s, "
-          f"p99 {np.percentile(durs, 99):.2f}s, {over:.1%} over the "
-          f"{budget:.1f}s budget", flush=True)
+    print(
+        f"positives   {len(files)} clips, median {np.median(durs):.2f}s, "
+        f"p99 {np.percentile(durs, 99):.2f}s, {over:.1%} over the "
+        f"{budget:.1f}s budget",
+        flush=True,
+    )
     if over > 0.01:
-        print(f"\n*** {over:.1%} of positives are longer than {budget:.1f}s. "
-              f"Those get cropped from the FRONT\n    when they are written "
-              f"into the window, which removes the wake phrase and\n    leaves "
-              f"a positive that does not contain one. Shorten the "
-              f"continuation\n    forms in alfred.yaml before training on "
-              f"this.\n", flush=True)
+        print(
+            f"\n*** {over:.1%} of positives are longer than {budget:.1f}s. "
+            f"Those get cropped from the FRONT\n    when they are written "
+            f"into the window, which removes the wake phrase and\n    leaves "
+            f"a positive that does not contain one. Shorten the "
+            f"continuation\n    forms in alfred.yaml before training on "
+            f"this.\n",
+            flush=True,
+        )
 
 
 def run_data_stages(cfg, first):
@@ -431,10 +484,13 @@ def run_data_stages(cfg, first):
         # rebuild them (~40 min of TTS).
         stamped = (read_data_stamp(cfg) or {}).get("target_phrases")
         if stamped != list(cfg.target_phrases):
-            print(f"    phrase list changed (on disk: "
-                  f"{'unrecorded' if stamped is None else len(stamped)} "
-                  f"phrases, this run: {len(cfg.target_phrases)}) - "
-                  f"regenerating", flush=True)
+            print(
+                f"    phrase list changed (on disk: "
+                f"{'unrecorded' if stamped is None else len(stamped)} "
+                f"phrases, this run: {len(cfg.target_phrases)}) - "
+                f"regenerating",
+                flush=True,
+            )
             clear_tts_splits(cfg)
         run_generate(cfg)
         check_positive_lengths(cfg)
@@ -456,10 +512,16 @@ def artifact_stem(model_name, name, tag, seed):
 
 def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
     # A name with no entry in `variants` is taken as a bare model_size.
-    cfg = (load_config(root, over=over) if over is not None
-           else load_config(root, size=name))
-    print(f"\n=== {key}: {cfg.model.model_type}/{cfg.model.model_size}, "
-          f"{cfg.steps} steps, seed {seed} ===", flush=True)
+    cfg = (
+        load_config(root, over=over)
+        if over is not None
+        else load_config(root, size=name)
+    )
+    print(
+        f"\n=== {key}: {cfg.model.model_type}/{cfg.model.model_size}, "
+        f"{cfg.steps} steps, seed {seed} ===",
+        flush=True,
+    )
 
     # Per VARIANT, not once per process: run_train advances the global RNG, so
     # seeding only at startup would leave the arms unpaired.
@@ -483,8 +545,10 @@ def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
         # size destroys them.
         "onnx": keep(onnx_path, artifacts / f"{stem}.onnx"),
         "pt": keep(pt_path, artifacts / f"{stem}.pt"),
-        "det_png": keep(cfg.model_output_dir / f"{cfg.model_name}_det.png",
-                        artifacts / f"{stem}_det.png"),
+        "det_png": keep(
+            cfg.model_output_dir / f"{cfg.model_name}_det.png",
+            artifacts / f"{stem}_det.png",
+        ),
         # The settings THIS row was measured under; the global _run blob goes
         # stale once a --tag re-run mixes two SNR settings into one file.
         "data": dict(prov),
@@ -492,8 +556,10 @@ def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
     if metrics is None:
         row["eval_error"] = eval_err
         results[key] = row
-        print(f"  {key}: trained + exported, EVAL FAILED - artifacts kept "
-              f"({eval_err})", flush=True)
+        print(
+            f"  {key}: trained + exported, EVAL FAILED - artifacts kept ({eval_err})",
+            flush=True,
+        )
         return
 
     # Two operating points: evaluate.py hardcodes threshold=0.5 (*_at_half),
@@ -512,15 +578,20 @@ def run_variant(name, over, root, results, artifacts, key, stem, prov, seed):
         validation_hours=metrics["validation_hours"],
     )
     results[key] = row
-    print(f"  {key}: {row['optimal_recall']:.1%} recall at "
-          f"{row['optimal_fpph']} FP/hr over {row['validation_hours']:.1f} h "
-          f"({minutes} min)", flush=True)
+    print(
+        f"  {key}: {row['optimal_recall']:.1%} recall at "
+        f"{row['optimal_fpph']} FP/hr over {row['validation_hours']:.1f} h "
+        f"({minutes} min)",
+        flush=True,
+    )
 
 
 def table(results, root, target_fpph):
     print(f"\n{'':37}{'--- at fixed 0.5 ---':>26}{'--- tuned ---':>26}")
-    print(f"{'variant':18}{'params':>9}{'onnx':>10}{'AUT':>9}{'FPPH':>8}"
-          f"{'recall':>9}{'thresh':>9}{'recall':>9}{'FPPH':>8}{'train':>8}")
+    print(
+        f"{'variant':18}{'params':>9}{'onnx':>10}{'AUT':>9}{'FPPH':>8}"
+        f"{'recall':>9}{'thresh':>9}{'recall':>9}{'FPPH':>8}{'train':>8}"
+    )
     print("-" * 97)
     for key, r in results.items():
         if key.startswith("_"):
@@ -529,109 +600,177 @@ def table(results, root, target_fpph):
             print(f"{key:18}FAILED - {r['error'][:60]}")
             continue
         if "eval_error" in r:
-            print(f"{key:18}trained OK, eval FAILED (artifacts kept) - "
-                  f"{r['eval_error'][:40]}")
+            print(
+                f"{key:18}trained OK, eval FAILED (artifacts kept) - "
+                f"{r['eval_error'][:40]}"
+            )
             continue
-        print(f"{key:18}{r['params']/1000:>8.1f}k{r['onnx_kb']:>7} KB"
-              f"{r['aut']:>9.4f}{r['fpph_at_half']:>8.2f}"
-              f"{r['recall_at_half']:>9.1%}{r['optimal_threshold']:>9.2f}"
-              f"{r['optimal_recall']:>9.1%}{r['optimal_fpph']:>8.2f}"
-              f"{r['train_min']:>7.1f}m")
-    scored = {k: r for k, r in results.items() if not k.startswith("_")
-              and "error" not in r and "eval_error" not in r}
+        print(
+            f"{key:18}{r['params'] / 1000:>8.1f}k{r['onnx_kb']:>7} KB"
+            f"{r['aut']:>9.4f}{r['fpph_at_half']:>8.2f}"
+            f"{r['recall_at_half']:>9.1%}{r['optimal_threshold']:>9.2f}"
+            f"{r['optimal_recall']:>9.1%}{r['optimal_fpph']:>8.2f}"
+            f"{r['train_min']:>7.1f}m"
+        )
+    scored = {
+        k: r
+        for k, r in results.items()
+        if not k.startswith("_") and "error" not in r and "eval_error" not in r
+    }
     live = list(scored.values())
     # find_best_threshold silently falls back to MAX BALANCED ACCURACY when no
     # threshold fits target_fp_per_hour (2026-08-17: 16.3 and 13.4 FP/hr against
     # a 0.2 target, still printed as "98.4% recall").
     missed = [k for k, r in scored.items() if r["optimal_fpph"] > target_fpph]
     if missed:
-        print(f"\n*** {', '.join(missed)}\n    NO threshold met the "
-              f"{target_fpph} FP/hr budget, so those tuned columns are "
-              f"livekit's\n    fallback (max balanced accuracy), not an "
-              f"operating point. Read them as\n    'did not fit', not as "
-              f"recall.")
+        print(
+            f"\n*** {', '.join(missed)}\n    NO threshold met the "
+            f"{target_fpph} FP/hr budget, so those tuned columns are "
+            f"livekit's\n    fallback (max balanced accuracy), not an "
+            f"operating point. Read them as\n    'did not fit', not as "
+            f"recall."
+        )
     # positive_features_test comes from the SAME augmentation as training, so a
     # pad-then-mix row and the row beside it are graded on different test sets
     # and their recalls are not comparable.
-    if len({bool((r.get("data") or {}).get("pad_then_mix"))
-            for r in scored.values()}) > 1:
-        print("\n*** MIXED TEST SETS: pad-then-mix rows are graded on "
-              "realistic windows, the\n    others on windows carrying the "
-              "silence shortcut - positive_features_test is\n    built by "
-              "whichever augmentation trained the model. Recall is NOT "
-              "comparable\n    across that line. Bench.bat is; it scores every "
-              "model on the same real audio.")
+    if (
+        len({bool((r.get("data") or {}).get("pad_then_mix")) for r in scored.values()})
+        > 1
+    ):
+        print(
+            "\n*** MIXED TEST SETS: pad-then-mix rows are graded on "
+            "realistic windows, the\n    others on windows carrying the "
+            "silence shortcut - positive_features_test is\n    built by "
+            "whichever augmentation trained the model. Recall is NOT "
+            "comparable\n    across that line. Bench.bat is; it scores every "
+            "model on the same real audio."
+        )
     if len(live) >= 2 and (
-            max(r["optimal_recall"] for r in live)
-            - min(r["optimal_recall"] for r in live) < 0.005
-            and max(r["optimal_fpph"] for r in live)
-            - min(r["optimal_fpph"] for r in live) < 0.02):
-        print("\nSATURATED: every variant landed within 0.5% recall and 0.02 "
-              "FPPH of the rest.\nThis table cannot rank them - it is a smoke "
-              "test that they all passed. The\nranking, if there is one, "
-              "comes from Bench.bat.")
-    hrs = next((r.get("validation_hours") for r in results.values()
-                if isinstance(r, dict) and "validation_hours" in r), None)
-    print(f"\nFPPH is measured over {hrs} h of validation negatives. If "
-          f"make_validation.py\nhas run, that is YOUR room and the number "
-          f"means something; if it has not, it is\nlivekit's synthetic set, "
-          f"which could not tell three sizes apart in 2026-08-15's\nsweep "
-          f"(all three: 3 FPs, ~99.3% recall, AUT 0.0000).")
-    print("\nNEITHER threshold column ships. The parity gate showed livekit's "
-          "scores do\nnot transfer to openWakeWord's runtime - set "
-          "voice.wakeThreshold from the peak\nvalues that --wake-trials logs "
-          "on the K15.")
+        max(r["optimal_recall"] for r in live) - min(r["optimal_recall"] for r in live)
+        < 0.005
+        and max(r["optimal_fpph"] for r in live) - min(r["optimal_fpph"] for r in live)
+        < 0.02
+    ):
+        print(
+            "\nSATURATED: every variant landed within 0.5% recall and 0.02 "
+            "FPPH of the rest.\nThis table cannot rank them - it is a smoke "
+            "test that they all passed. The\nranking, if there is one, "
+            "comes from Bench.bat."
+        )
+    hrs = next(
+        (
+            r.get("validation_hours")
+            for r in results.values()
+            if isinstance(r, dict) and "validation_hours" in r
+        ),
+        None,
+    )
+    print(
+        f"\nFPPH is measured over {hrs} h of validation negatives. If "
+        f"make_validation.py\nhas run, that is YOUR room and the number "
+        f"means something; if it has not, it is\nlivekit's synthetic set, "
+        f"which could not tell three sizes apart in 2026-08-15's\nsweep "
+        f"(all three: 3 FPs, ~99.3% recall, AUT 0.0000)."
+    )
+    print(
+        "\nNEITHER threshold column ships. The parity gate showed livekit's "
+        "scores do\nnot transfer to openWakeWord's runtime - set "
+        "voice.wakeThreshold from the peak\nvalues that --wake-trials logs "
+        "on the K15."
+    )
     print(f"\nartifacts: {root / 'artifacts'}")
-    print("\nNEXT: Bench.bat. Nothing above ranks these candidates - the "
-          "synthetic eval is\nsaturated (both sizes ace it). bench_real.py "
-          "scores them on your voice, in your\nroom, under openWakeWord, and "
-          "that ranking is the one that has ever been right.")
+    print(
+        "\nNEXT: Bench.bat. Nothing above ranks these candidates - the "
+        "synthetic eval is\nsaturated (both sizes ace it). bench_real.py "
+        "scores them on your voice, in your\nroom, under openWakeWord, and "
+        "that ranking is the one that has ever been right."
+    )
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("variants", nargs="*", default=None,
-                    help="names from alfred.yaml's `variants:` (default: all). "
-                         "A name with no entry is taken as a bare model_size.")
-    ap.add_argument("--root", type=Path, default=Path(r"C:\Users\tillm\wake"),
-                    help="where data/, output/ and the venv live (not the repo)")
-    ap.add_argument("--from", dest="first", choices=STAGES, default="generate",
-                    help="skip stages before this one")
+    ap.add_argument(
+        "variants",
+        nargs="*",
+        default=None,
+        help="names from alfred.yaml's `variants:` (default: all). "
+        "A name with no entry is taken as a bare model_size.",
+    )
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=Path(r"C:\Users\tillm\wake"),
+        help="where data/, output/ and the venv live (not the repo)",
+    )
+    ap.add_argument(
+        "--from",
+        dest="first",
+        choices=STAGES,
+        default="generate",
+        help="skip stages before this one",
+    )
     # (0, 20), NOT openWakeWord's (-10, 15): A/B'd 2026-08-16 on identical data
     # and refuted - noise ceiling 0.103 -> 0.678, separation 5.34x -> 1.07x,
     # threshold 0.10 -> 0.62, recall @+10 dB 23% -> 14%. oWW pairs that floor
     # with ~31,000 h of negatives; we have ~2,000 h.
-    ap.add_argument("--snr", nargs=2, type=float, default=(0.0, 20.0),
-                    metavar=("LO", "HI"), help="background mix range in dB")
-    ap.add_argument("--clean", type=float, default=0.25,
-                    help="fraction of clips left un-mixed")
+    ap.add_argument(
+        "--snr",
+        nargs=2,
+        type=float,
+        default=(0.0, 20.0),
+        metavar=("LO", "HI"),
+        help="background mix range in dB",
+    )
+    ap.add_argument(
+        "--clean", type=float, default=0.25, help="fraction of clips left un-mixed"
+    )
     # Far-field is the deployment condition. livekit's default is 0.5; a knob
     # because nothing has measured its effect yet.
-    ap.add_argument("--rir", type=float, default=0.5,
-                    help="probability a clip is convolved with a room impulse "
-                         "response (livekit default 0.5)")
-    ap.add_argument("--tag", default="",
-                    help="suffix for result keys and artifact names. Use when "
-                         "re-running with DIFFERENT data settings (an --snr "
-                         "A/B): without it the second run's artifacts "
-                         "overwrite the first's and its finished rows are "
-                         "skipped as already done")
-    ap.add_argument("--seed", type=int, default=0,
-                    help="training RNG seed. Seed variance is LARGER than "
-                         "every effect measured here (64%% vs 86%% clean on "
-                         "identical data), so sweep >=3 per arm.")
-    ap.add_argument("--pad-then-mix", action="store_true",
-                    help="build the training window from background instead of "
-                         "zeros - removes the silence shortcut (see "
-                         "patch_pad_then_mix). Changes the DATA: needs "
-                         "--from augment.")
-    ap.add_argument("--continuations", action="store_true",
-                    help="add alfred.yaml's continuation_phrases to the "
-                         "positives - the run-on delivery ('hey alfred play "
-                         "hades') the TTS corpus has never contained. Changes "
-                         "the DATA: needs --from generate.")
-    ap.add_argument("--no-bench", action="store_true",
-                    help="skip the real-audio bench that normally closes a run")
+    ap.add_argument(
+        "--rir",
+        type=float,
+        default=0.5,
+        help="probability a clip is convolved with a room impulse "
+        "response (livekit default 0.5)",
+    )
+    ap.add_argument(
+        "--tag",
+        default="",
+        help="suffix for result keys and artifact names. Use when "
+        "re-running with DIFFERENT data settings (an --snr "
+        "A/B): without it the second run's artifacts "
+        "overwrite the first's and its finished rows are "
+        "skipped as already done",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="training RNG seed. Seed variance is LARGER than "
+        "every effect measured here (64%% vs 86%% clean on "
+        "identical data), so sweep >=3 per arm.",
+    )
+    ap.add_argument(
+        "--pad-then-mix",
+        action="store_true",
+        help="build the training window from background instead of "
+        "zeros - removes the silence shortcut (see "
+        "patch_pad_then_mix). Changes the DATA: needs "
+        "--from augment.",
+    )
+    ap.add_argument(
+        "--continuations",
+        action="store_true",
+        help="add alfred.yaml's continuation_phrases to the "
+        "positives - the run-on delivery ('hey alfred play "
+        "hades') the TTS corpus has never contained. Changes "
+        "the DATA: needs --from generate.",
+    )
+    ap.add_argument(
+        "--no-bench",
+        action="store_true",
+        help="skip the real-audio bench that normally closes a run",
+    )
     ap.add_argument("--list", action="store_true", help="show state and exit")
     args = ap.parse_args()
     if args.tag and not all(c.isalnum() or c in "._-" for c in args.tag):
@@ -652,72 +791,101 @@ def main():
     val = Path(cfg0.data_path) / "features" / "validation_set_features.npy"
     print(f"root       {root}")
     print(f"config     {CONFIG}")
-    print(f"validation {val.name}: "
-          f"{'MISSING' if not val.exists() else f'{val.stat().st_size/1e6:.0f} MB'}"
-          f"  <- make_validation.py replaces this with your room")
+    print(
+        f"validation {val.name}: "
+        f"{'MISSING' if not val.exists() else f'{val.stat().st_size / 1e6:.0f} MB'}"
+        f"  <- make_validation.py replaces this with your room"
+    )
     print(f"variants   {names}   stages from '{args.first}'")
-    print(f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
-          f"{args.clean:.0%} clean, rir p={args.rir}, "
-          f"rounds {cfg0.augmentation.rounds}")
+    print(
+        f"augment    snr {args.snr[0]:+g}..{args.snr[1]:+g} dB, "
+        f"{args.clean:.0%} clean, rir p={args.rir}, "
+        f"rounds {cfg0.augmentation.rounds}"
+    )
     # What is ALREADY trained, and under what: a `--tag snr-neg10` run on a
     # stale checkout once trained at (0, 20) and produced a duplicate of
     # `medium` under a label that said otherwise (2026-08-16).
     if results_path.exists():
         prior = json.loads(results_path.read_text(encoding="utf-8"))
-        rows = [(k, v.get("data") or {}) for k, v in prior.items()
-                if not k.startswith("_")]
+        rows = [
+            (k, v.get("data") or {}) for k, v in prior.items() if not k.startswith("_")
+        ]
         if rows:
             print("\nalready trained:")
             for k, dat in rows:
                 snr, pad = dat.get("snr_db_range"), dat.get("pad_then_mix")
                 # "SAME" must mean the same DATA, not the same SNR: every
                 # pad-then-mix row carries an identical snr to its control.
-                same = (" <- SAME as this run" if
-                        (snr, bool(pad)) == (list(args.snr),
-                                             bool(args.pad_then_mix)) else "")
-                print(f"  {k:22} snr={snr} clean={dat.get('clean_fraction')} "
-                      f"rir={dat.get('rir_p')} pad={bool(pad)} "
-                      f"commit={dat.get('pipeline_commit')}{same}")
+                same = (
+                    " <- SAME as this run"
+                    if (snr, bool(pad)) == (list(args.snr), bool(args.pad_then_mix))
+                    else ""
+                )
+                print(
+                    f"  {k:22} snr={snr} clean={dat.get('clean_fraction')} "
+                    f"rir={dat.get('rir_p')} pad={bool(pad)} "
+                    f"commit={dat.get('pipeline_commit')}{same}"
+                )
     # What the models will ACTUALLY train on, printed before the --list return:
     # --from train reuses whatever augment last wrote.
-    asked = {"snr_db_range": list(args.snr), "clean_fraction": args.clean,
-             "rir_p": args.rir, "rounds": cfg0.augmentation.rounds,
-             "pad_then_mix": bool(args.pad_then_mix),
-             # What the CLIPS were made from: a resume vs a silent reuse.
-             "target_phrases": list(cfg0.target_phrases)}
+    asked = {
+        "snr_db_range": list(args.snr),
+        "clean_fraction": args.clean,
+        "rir_p": args.rir,
+        "rounds": cfg0.augmentation.rounds,
+        "pad_then_mix": bool(args.pad_then_mix),
+        # What the CLIPS were made from: a resume vs a silent reuse.
+        "target_phrases": list(cfg0.target_phrases),
+    }
     rebuilding = STAGES.index(args.first) <= STAGES.index("augment")
     on_disk = read_data_stamp(cfg0)
-    prov = dict(asked) if rebuilding else {**(on_disk or asked),
-                                           "data_stamp": bool(on_disk)}
+    prov = (
+        dict(asked)
+        if rebuilding
+        else {**(on_disk or asked), "data_stamp": bool(on_disk)}
+    )
     prov.update(tool_versions())
     # EVERY data setting, not just the SNR: `--pad-then-mix --from train` over
     # features built without it would otherwise pass. Keys absent from an older
     # stamp are left alone rather than reported as mismatches.
-    differs = {k: (on_disk[k], v) for k, v in asked.items()
-               if on_disk and k in on_disk and on_disk[k] != v}
+    differs = {
+        k: (on_disk[k], v)
+        for k, v in asked.items()
+        if on_disk and k in on_disk and on_disk[k] != v
+    }
     if not rebuilding:
         if differs:
-            print(f"\n*** STALE DATA: the features on disk were NOT built the "
-                  f"way this run asks.\n    --from {args.first} does not "
-                  f"rebuild them, so that is what these models\n    will train "
-                  f"on; the rows are stamped with the real values. Use\n"
-                  f"    --from augment to change it.", flush=True)
+            print(
+                f"\n*** STALE DATA: the features on disk were NOT built the "
+                f"way this run asks.\n    --from {args.first} does not "
+                f"rebuild them, so that is what these models\n    will train "
+                f"on; the rows are stamped with the real values. Use\n"
+                f"    --from augment to change it.",
+                flush=True,
+            )
             for k, (was, want) in differs.items():
-                print(f"      {k}: on disk {_short(was)}, this run asked "
-                      f"{_short(want)}", flush=True)
+                print(
+                    f"      {k}: on disk {_short(was)}, this run asked {_short(want)}",
+                    flush=True,
+                )
             print(flush=True)
         elif not on_disk:
-            print(f"\n[warn] no data_settings.json beside the features: they "
-                  f"predate this stamping,\n       so provenance falls back "
-                  f"to the arguments and may be wrong. --from augment\n"
-                  f"       rebuilds and records the truth.\n", flush=True)
+            print(
+                "\n[warn] no data_settings.json beside the features: they "
+                "predate this stamping,\n       so provenance falls back "
+                "to the arguments and may be wrong. --from augment\n"
+                "       rebuilds and records the truth.\n",
+                flush=True,
+            )
         else:
             phrases = on_disk.get("target_phrases")
-            print(f"data       features built with snr="
-                  f"{on_disk['snr_db_range']}, pad_then_mix="
-                  f"{on_disk.get('pad_then_mix')}, "
-                  f"{len(phrases) if phrases else 'unrecorded'} phrases "
-                  f"(matches this run)")
+            print(
+                f"data       features built with snr="
+                f"{on_disk['snr_db_range']}, pad_then_mix="
+                f"{on_disk.get('pad_then_mix')}, "
+                f"{len(phrases) if phrases else 'unrecorded'} phrases "
+                f"(matches this run)"
+            )
     if args.list:
         return 0
 
@@ -725,21 +893,30 @@ def main():
     if args.continuations:
         # The BARE list: load_config already appended the continuations.
         patch_adversarial_from_bare(
-            yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["target_phrases"])
+            yaml.safe_load(CONFIG.read_text(encoding="utf-8"))["target_phrases"]
+        )
     if args.pad_then_mix:
-        patch_pad_then_mix(args.snr[0], args.snr[1], args.clean,
-                           int(cfg0.augmentation.clip_duration * 16000))
+        patch_pad_then_mix(
+            args.snr[0],
+            args.snr[1],
+            args.clean,
+            int(cfg0.augmentation.clip_duration * 16000),
+        )
     else:
         patch_augmentation(args.snr[0], args.snr[1], args.clean)
-    n_rir = sum(len(list(Path(d).glob("**/*.wav")))
-                for d in cfg0.augmentation.rir_paths)
+    n_rir = sum(
+        len(list(Path(d).glob("**/*.wav"))) for d in cfg0.augmentation.rir_paths
+    )
     if not n_rir:
-        sys.exit(f"no impulse responses under {cfg0.augmentation.rir_paths} - "
-                 f"apply_rir would silently no-op and every positive would "
-                 f"train anechoic, which is the opposite of far-field.")
+        sys.exit(
+            f"no impulse responses under {cfg0.augmentation.rir_paths} - "
+            f"apply_rir would silently no-op and every positive would "
+            f"train anechoic, which is the opposite of far-field."
+        )
     patch_rir(args.rir)
-    print(f"[patch] reverberation p={args.rir} over {n_rir} impulse responses",
-          flush=True)
+    print(
+        f"[patch] reverberation p={args.rir} over {n_rir} impulse responses", flush=True
+    )
     run_data_stages(cfg0, args.first)
 
     # Appended after EACH size; a finished size is skipped on a re-run. Delete
@@ -761,15 +938,25 @@ def main():
         # artifacts had all overwritten one another.
         done = results.get(key)
         if done and "error" not in done:
-            if done.get("onnx") == f"{stem}.onnx" and (
-                    artifacts / f"{stem}.onnx").is_file():
+            if (
+                done.get("onnx") == f"{stem}.onnx"
+                and (artifacts / f"{stem}.onnx").is_file()
+            ):
                 print(f"=== {key}: already in {results_path.name}, skipping ===")
                 continue
-            print(f"=== {key}: row exists but {stem}.onnx does not - "
-                  f"retraining ===")
+            print(f"=== {key}: row exists but {stem}.onnx does not - retraining ===")
         try:
-            run_variant(name, specs.get(name), root, results, artifacts,
-                        key, stem, prov, args.seed)
+            run_variant(
+                name,
+                specs.get(name),
+                root,
+                results,
+                artifacts,
+                key,
+                stem,
+                prov,
+                args.seed,
+            )
         except Exception:
             # A failed variant is recorded and the sweep continues.
             traceback.print_exc()
@@ -788,13 +975,22 @@ def main():
         print("\n" + "=" * 79)
         print("REAL-AUDIO BENCH - your voice, your room, openWakeWord's runtime")
         print("=" * 79, flush=True)
-        r = subprocess.run([sys.executable, str(HERE / "bench_real.py"),
-                            "--root", str(root), "--snr-sweep"])
+        r = subprocess.run(
+            [
+                sys.executable,
+                str(HERE / "bench_real.py"),
+                "--root",
+                str(root),
+                "--snr-sweep",
+            ]
+        )
         if r.returncode:
             # Missing positives or negatives is the usual cause, and is not a
             # training failure.
-            print("\n[bench] did not run. The models are still in "
-                  f"{artifacts}; fix the bench inputs and run Bench.bat.")
+            print(
+                "\n[bench] did not run. The models are still in "
+                f"{artifacts}; fix the bench inputs and run Bench.bat."
+            )
     return 0
 
 

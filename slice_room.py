@@ -12,8 +12,9 @@ one 40-minute recording lands in ~0.1% of mixes; at 4 s a clip it becomes ~600
 files and reaches ~45%. 4 s rather than 2 leaves crop headroom over the
 augmenter's 2 s clip_duration.
 
-Stdlib only: the training box has no k15 venv.
+Stdlib only: the training box has no slopstation venv.
 """
+
 import sys
 import wave
 from pathlib import Path
@@ -33,7 +34,7 @@ def main():
         while True:
             frames = r.readframes(n)
             if len(frames) < n * width:
-                break               # drop the short tail rather than pad it
+                break  # drop the short tail rather than pad it
             with wave.open(str(dest / f"room_{i:05d}.wav"), "wb") as o:
                 o.setnchannels(chans)
                 o.setsampwidth(width)

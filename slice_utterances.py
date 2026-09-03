@@ -1,6 +1,6 @@
 """Split a recording of repeated wake phrases into one-utterance clips.
 
-    .venv\\Scripts\\python bench\\slice_utterances.py positives.wav out\\dir
+    .venv\\Scripts\\python -m slopstation.agent.bench.slice_utterances positives.wav out\\dir
 
 Feeds wake-training/bench_real.py (real-voice recall) and
 bench/train_verifier.py (positive examples); both want one utterance per wav.
@@ -15,6 +15,7 @@ previous utterance; clips without a usable lead-in are DROPPED. Measured
 2026-08-16: five of seven short-lead clips scored 0.009-0.19 against their
 session median of 0.68 - false rejects for every model at once.
 """
+
 import sys
 import wave
 from pathlib import Path
@@ -22,18 +23,18 @@ from pathlib import Path
 import numpy as np
 
 RATE = 16000
-FRAME = 320                     # 20 ms RMS frames
-LEAD_S = 2.0                    # oWW's window - the clip must fill it
+FRAME = 320  # 20 ms RMS frames
+LEAD_S = 2.0  # oWW's window - the clip must fill it
 # The score peaks AFTER the talker stops: "alfred" ends on a low-energy /d/, so
 # the energy gate closes while the score is still climbing - it crests 0.7-1.1 s
 # later. Measured 2026-08-16 on room_test.wav, 20 utterances (median peak
 # 0.892): tail 0.5 s -> median 0.396; tail 1.0 / 1.5 / 2.0 s -> median 0.888.
 # 2.0 is past convergence and costs only a few hops of inference.
 TAIL_S = 2.0
-BRIDGE_S = 0.35                 # "hey ... alfred" is one utterance, not two
+BRIDGE_S = 0.35  # "hey ... alfred" is one utterance, not two
 MIN_UTTERANCE_S = 0.25
 MAX_UTTERANCE_S = 3.0
-MIN_LEAD_S = 1.5                # below this the clip is dropped, not written
+MIN_LEAD_S = 1.5  # below this the clip is dropped, not written
 
 
 def voiced_frames(pcm):
@@ -41,8 +42,11 @@ def voiced_frames(pcm):
     floor is the 20th percentile, not the minimum: a room is never silent, and
     anchoring to the quietest frame would call the whole file voiced."""
     n = len(pcm) // FRAME
-    rms = np.sqrt(np.mean(np.square(
-        pcm[:n * FRAME].astype(np.float64).reshape(n, FRAME)), axis=1))
+    rms = np.sqrt(
+        np.mean(
+            np.square(pcm[: n * FRAME].astype(np.float64).reshape(n, FRAME)), axis=1
+        )
+    )
     floor = np.percentile(rms, 20)
     return rms > max(floor * 3.0, 60.0), rms
 
@@ -69,14 +73,19 @@ def main():
     src, dest = Path(sys.argv[1]), Path(sys.argv[2])
     with wave.open(str(src)) as w:
         if (w.getframerate(), w.getnchannels()) != (RATE, 1):
-            sys.exit(f"{src}: need 16 kHz mono, got {w.getframerate()} Hz "
-                     f"/ {w.getnchannels()} ch")
+            sys.exit(
+                f"{src}: need 16 kHz mono, got {w.getframerate()} Hz "
+                f"/ {w.getnchannels()} ch"
+            )
         pcm = np.frombuffer(w.readframes(w.getnframes()), np.int16)
     dest.mkdir(parents=True, exist_ok=True)
 
     mask, _ = voiced_frames(pcm)
-    keep = [(a, b) for a, b in runs(mask)
-            if MIN_UTTERANCE_S <= (b - a + 1) * FRAME / RATE <= MAX_UTTERANCE_S]
+    keep = [
+        (a, b)
+        for a, b in runs(mask)
+        if MIN_UTTERANCE_S <= (b - a + 1) * FRAME / RATE <= MAX_UTTERANCE_S
+    ]
 
     dropped, written, prev_end = 0, 0, 0
     for i, (a, b) in enumerate(keep):
@@ -88,7 +97,7 @@ def main():
         if lead < MIN_LEAD_S * RATE:
             dropped += 1
             continue
-        clip = pcm[max(0, start_s - lead):min(len(pcm), end_s + int(TAIL_S * RATE))]
+        clip = pcm[max(0, start_s - lead) : min(len(pcm), end_s + int(TAIL_S * RATE))]
         written += 1
         with wave.open(str(dest / f"utt_{i:03d}.wav"), "wb") as o:
             o.setnchannels(1)
@@ -97,14 +106,18 @@ def main():
             o.writeframes(clip.tobytes())
 
     print(f"{written} utterances -> {dest}")
-    print("Check that count against how many times you actually said it. Too "
-          "few means\nthe gate missed the quiet ones; too many means the room "
-          "moved between takes.")
+    print(
+        "Check that count against how many times you actually said it. Too "
+        "few means\nthe gate missed the quiet ones; too many means the room "
+        "moved between takes."
+    )
     if dropped:
-        print(f"\n{dropped} utterance(s) DROPPED: under {MIN_LEAD_S}s of gap "
-              f"since the previous one,\nso openWakeWord's ~2 s window could "
-              f"not fill and they would read as false\nrejects for every "
-              f"model. Say those again with ~3 s pauses if the loss hurts.")
+        print(
+            f"\n{dropped} utterance(s) DROPPED: under {MIN_LEAD_S}s of gap "
+            f"since the previous one,\nso openWakeWord's ~2 s window could "
+            f"not fill and they would read as false\nrejects for every "
+            f"model. Say those again with ~3 s pauses if the loss hurts."
+        )
 
 
 if __name__ == "__main__":
