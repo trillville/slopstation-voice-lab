@@ -1,0 +1,11 @@
+# Training data and runs: large, room-specific, not reproducible from here.
+data/
+runs/
+artifacts/
+*.wav
+*.npy
+pipeline_results.json
+
+.venv/
+__pycache__/
+*.pyc

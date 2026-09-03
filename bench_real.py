@@ -1,8 +1,7 @@
 """Rank candidate models on REAL audio through the runtime that will run them.
 
-    Bench.bat                    artifacts\\*.onnx PLUS the vendored models in
-                                 src\\slopstation\\agent\\models - the incumbent is in the
-                                 lineup by default
+    Bench.bat                    artifacts\\*.onnx PLUS this repo's models\\*.onnx -
+                                 the incumbent is in the lineup by default
     Bench.bat --models a.onnx b.onnx     just these
     Bench.bat --target-fa 0.5            allow 0.5 false accepts/hour
     Bench.bat --noise-only               negatives only, ranked by noise
@@ -38,7 +37,7 @@ import numpy as np
 for _stream in (sys.stdout, sys.stderr):
     _stream.reconfigure(encoding="utf-8", errors="replace")
 
-HERE = Path(__file__).resolve().parent  # .../wake-training, in the repo
+HERE = Path(__file__).resolve().parent  # this repo
 
 CHUNK = 1280  # oWW's native 80 ms hop
 RATE = 16000
@@ -263,7 +262,7 @@ def main():
         # The vendored models are the incumbents: the default question is "does
         # anything in artifacts beat what the K15 already runs".
         models = sorted((root / "artifacts").glob("*.onnx")) + sorted(
-            (HERE.parent / "src" / "slopstation" / "agent" / "models").glob("*.onnx")
+            (HERE / "models").glob("*.onnx")
         )
         seen = set()
         models = [
@@ -274,7 +273,7 @@ def main():
         sys.exit(
             f"no positives under {pos_dir}\n"
             f"Record yourself saying the wake phrase and split it with "
-            f"python -m slopstation.agent.bench.slice_utterances - ONE utterance per wav "
+            f"python slice_utterances.py - ONE utterance per wav "
             f"(or pass --noise-only for a negatives-only comparison)."
         )
     if not negatives:

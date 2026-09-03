@@ -1,6 +1,6 @@
 """Slice a room recording into background clips the augmenter will actually use.
 
-    python wake-training\\slice_room.py room.wav <training-tree>\\data\\backgrounds\\room
+    python slice_room.py room.wav <training-tree>\\data\\backgrounds\\room
 
 Runs on the GAMING PC, and only AFTER `livekit-wakeword setup`: setup skips
 the 1.1 GB MUSAN download outright, with no error, if it finds any wav already

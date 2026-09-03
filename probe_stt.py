@@ -1,8 +1,8 @@
 """Does Flux hear a command well enough to ACT on it?
 
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --no-keyterms   (no boost at all)
-    .venv\\Scripts\\python -m slopstation.agent.bench.probe_stt --sweep         (fuzzyTitleThreshold)
+    python probe_stt.py
+    python probe_stt.py --no-keyterms   (no boost at all)
+    python probe_stt.py --sweep         (fuzzyTitleThreshold)
 
 Live Deepgram, real money, non-deterministic. Windows SAPI speaks each
 utterance, so this measures the STT config, not tonight's room.

@@ -1,0 +1,22 @@
+# Lint and compile only. The training run needs a GPU and a 16 GB torch
+# environment, and the device scripts need a microphone, so neither is
+# reproducible on a runner - see README.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: python -m compileall -q .
