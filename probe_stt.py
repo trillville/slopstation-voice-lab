@@ -30,7 +30,7 @@ import tempfile
 import wave
 from pathlib import Path
 
-from slopstation import cglib
+from slopstation import config
 from slopstation.agent.speech import session_runtime
 from slopstation.agent.speech.grammar_gate import GrammarMatcher
 from slopstation.agent.tools import library, titles
@@ -298,9 +298,9 @@ def main():
         if args.capitalized
         else "spoken"
     )
-    cfg = cglib.load_config()
-    key = cglib.load_secrets().get("deepgramApiKey")
-    if not cglib.real_key(key):
+    cfg = config.load()
+    key = config.secrets().get("deepgramApiKey")
+    if not config.real_key(key):
         print("no deepgramApiKey - nothing to probe")
         return 1
 
